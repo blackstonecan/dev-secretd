@@ -1,0 +1,3 @@
+# secretd: always ask for the password for `sudo secret ...`, also when sudo
+# remembers it for other commands. Installed as /etc/sudoers.d/secretd.
+Defaults!/usr/local/bin/secret timestamp_timeout=0
