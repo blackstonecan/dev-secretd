@@ -19,8 +19,11 @@ const usage = `secret - store secrets that agents can use but not see
 
 User commands:
   secret init --project NAME              make secrets.yaml in this folder
+  secret init --user                      make the user manifest (~/.config/secretd/user.yaml)
   secret set NAME [flags]                 add a new secret (hidden input or stdin)
       --project P      default: from secrets.yaml
+      --user           user scope: projects use it with "fallback: user"
+                       in secrets.yaml; their own secret of the name wins
       --file           run-tier file secret (the env var holds a temp file path)
       --host H         proxy tier: upstream host (HTTPS)
       --header X       proxy tier: header name, for example x-api-key
@@ -28,9 +31,11 @@ User commands:
       --query Q        proxy tier: query parameter, instead of a header
   secret list [--project P | --all]       names and rules, never values
   secret run [--project P] -- CMD...      run CMD with the secrets of secrets.yaml
+  secret run --user -- CMD...             run CMD with the secrets of the user manifest
   secret import FILE [--keep K1,K2] [--yes]
                                           move values from a .env file into secretd
   secret lock [P] | secret unlock [P]     block or allow use of a project
+                                          ("user" blocks every use of user-scope secrets)
   secret status
 
 Root commands (run with: /usr/bin/sudo secret ...):

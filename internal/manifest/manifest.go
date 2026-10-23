@@ -14,6 +14,14 @@
 //	  FIREBASE_ADMIN:
 //	    tier: run
 //	    var: GOOGLE_APPLICATION_CREDENTIALS   # a file secret: the var holds the path
+//	  GITHUB_TOKEN:
+//	    tier: proxy
+//	    fallback: user       # use user/GITHUB_TOKEN when this project has none
+//	    env:
+//	      GITHUB_API_URL: "{proxy}"
+//
+// The user manifest (UserPath) has `project: user` and lists the user-scope
+// secrets for `secret run --user`.
 package manifest
 
 import (
@@ -34,6 +42,9 @@ type Entry struct {
 	Tier store.Tier        `yaml:"tier"`
 	Env  map[string]string `yaml:"env,omitempty"` // proxy tier: env vars; "{proxy}" is the base URL
 	Var  string            `yaml:"var,omitempty"` // run tier: env var name (default: the secret name)
+	// Fallback "user": use the user-scope secret when the project has none of
+	// its own. A project secret of the same name always wins.
+	Fallback string `yaml:"fallback,omitempty"`
 }
 
 type Manifest struct {
@@ -107,8 +118,46 @@ func (m *Manifest) Validate() error {
 		default:
 			return fmt.Errorf("%s: %s: tier must be proxy or run", m.Path, name)
 		}
+		if e.Fallback != "" {
+			if e.Fallback != store.UserProject {
+				return fmt.Errorf("%s: %s: fallback must be %q", m.Path, name, store.UserProject)
+			}
+			if m.Project == store.UserProject {
+				return fmt.Errorf("%s: %s: the user manifest has no fallback", m.Path, name)
+			}
+		}
 	}
 	return nil
+}
+
+// UserPath is the user manifest: $XDG_CONFIG_HOME/secretd/user.yaml, or
+// ~/.config/secretd/user.yaml.
+func UserPath() (string, error) {
+	dir := os.Getenv("XDG_CONFIG_HOME")
+	if dir == "" {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return "", err
+		}
+		dir = filepath.Join(home, ".config")
+	}
+	return filepath.Join(dir, "secretd", "user.yaml"), nil
+}
+
+// LoadUser reads the user manifest, which must say `project: user`.
+func LoadUser() (*Manifest, error) {
+	p, err := UserPath()
+	if err != nil {
+		return nil, err
+	}
+	m, err := Load(p)
+	if err != nil {
+		return nil, err
+	}
+	if m.Project != store.UserProject {
+		return nil, fmt.Errorf("%s: project must be %q", p, store.UserProject)
+	}
+	return m, nil
 }
 
 // Names returns the secret names, sorted.

@@ -156,3 +156,28 @@ func TestRefusals(t *testing.T) {
 		t.Errorf("locked project: status %d", resp.StatusCode)
 	}
 }
+
+// A project that falls back to a user-scope secret gets /user/NAME as its base
+// URL, so `secret lock user` blocks every use of it through the proxy.
+func TestUserScopeLock(t *testing.T) {
+	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		io.WriteString(w, r.Header.Get("Authorization"))
+	}))
+	defer upstream.Close()
+	dir := t.TempDir()
+	key, _ := store.NewKey()
+	s, _ := store.Open(dir, key)
+	must(t, s.Create(store.Secret{Project: store.UserProject, Name: "GITHUB_TOKEN", Tier: store.TierProxy, Value: "gh-user",
+		Binding: &store.Binding{Host: strings.TrimPrefix(upstream.URL, "https://"), Header: "Authorization", Format: "Bearer {}"}}, time.Now()))
+	st, _ := state.Load(dir)
+	p := httptest.NewServer(&Proxy{Store: s, State: st, Audit: state.NewAudit(dir), Transport: upstream.Client().Transport})
+	defer p.Close()
+
+	if resp, body := get(t, p.URL+"/user/GITHUB_TOKEN/x", nil); resp.StatusCode != 200 || body != "Bearer ***" {
+		t.Fatalf("user-scope proxy: %d %q", resp.StatusCode, body)
+	}
+	must(t, st.SetLocked(store.UserProject, true, time.Now()))
+	if resp, _ := get(t, p.URL+"/user/GITHUB_TOKEN/x", nil); resp.StatusCode != http.StatusForbidden {
+		t.Errorf("locked user scope: status %d", resp.StatusCode)
+	}
+}

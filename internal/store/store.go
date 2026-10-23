@@ -71,6 +71,11 @@ var (
 	queryRe   = regexp.MustCompile(`^[A-Za-z0-9_.-]{1,64}$`)
 )
 
+// UserProject is the user scope: secrets that any project may fall back to
+// when its manifest entry says `fallback: user` and it has no secret of the
+// same name itself.
+const UserProject = "user"
+
 var (
 	ErrNotFound = errors.New("secret not found")
 	ErrExists   = errors.New("secret already exists (use `sudo secret rotate` to change it)")

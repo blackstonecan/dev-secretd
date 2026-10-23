@@ -93,6 +93,45 @@ secrets:
 
 `secret set` only adds new names. To change a value: `sudo secret rotate P/NAME`.
 
+### User-scope secrets
+
+For a secret you use across projects, like a personal GitHub token, store it
+once in the user scope (the reserved project `user`):
+
+```bash
+secret set GITHUB_TOKEN --user --host api.github.com --header Authorization --format "Bearer {}"
+```
+
+A project uses it only when its entry says so (opt-in), and its own secret of
+the same name always wins:
+
+```yaml
+secrets:
+  GITHUB_TOKEN:
+    tier: proxy
+    fallback: user        # use user/GITHUB_TOKEN unless this project has its own
+    env:
+      GITHUB_API_URL: "{proxy}"
+      GITHUB_TOKEN: placeholder
+```
+
+- Without `fallback: user`, a missing project secret is an error, so a project
+  that should use its own token (another account's repos) never silently gets
+  yours. Give it its own: `secret set GITHUB_TOKEN` in that project.
+- Nothing is copied or overwritten: the fallback is a lookup at `secret run`
+  time. The user value changes only with `sudo secret rotate user/NAME`.
+- Only a *missing* project secret falls back. A project secret with the wrong
+  tier is an error. The store decides the tier and host of whichever secret is
+  used.
+- `secret run` prints `secret: NAME from user` on stderr for each fallback, and
+  the audit log records `"detail":"run from user"` (or `proxy from user`).
+  `secret list` in a project marks the user secrets it falls back to
+  (`fallback`, or `overridden by <project>`).
+- `secret lock user` blocks every use of user-scope secrets, in every project
+  and on the proxy; projects' own secrets keep working.
+- Outside projects: `secret init --user` makes `~/.config/secretd/user.yaml`
+  (`project: user`); list secrets there and use `secret run --user -- CMD`.
+
 ### Root commands (your own terminal, never inside an agent session)
 
 ```bash
@@ -117,6 +156,8 @@ your shell files.
 - **The proxy has no client authentication.** Any local process can use an
   unlocked project's proxy secrets (but not read them). Spend limits on each
   key and the audit log cover this. `secret lock` stops use of a project.
+  A user-scope proxy secret is reached at `/user/NAME`, so locking a project
+  does not stop direct calls to it; `secret lock user` does.
 - **`secret lock` is not a barrier against an agent**: an agent can run
   `secret unlock`. It stops use that nobody planned.
 - **The master key depends on this host** (systemd host key + TPM, no PCR

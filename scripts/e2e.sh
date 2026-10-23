@@ -79,9 +79,46 @@ check "import: config kept" "PORT=3000" "$env_now"
 check "import: manifest"   "JWT_SECRET"        "$(cat secrets.yaml)"
 check "import: run works"  "sk_test_abc|j w t" "$("$secret" run -- sh -c 'echo "$STRIPE_KEY|$JWT_SECRET"')"
 
+# --- user scope ---
+export XDG_CONFIG_HOME="$work/cfg"
+mkdir -p "$work/fb" "$work/nofb" "$work/elsewhere"
+check "set --user"            "stored user/NPM_TOKEN"    "$(printf 'npm-user' | "$secret" set NPM_TOKEN --user)"
+check "set --user proxy"      "stored user/GH_TOKEN"     "$(printf 'gh-user' | "$secret" set GH_TOKEN --user --host api.github.com --header Authorization --format 'Bearer {}')"
+check "init --project user"   "user scope, not a project" "$("$secret" init --project user 2>&1 || true)"
+cd "$work/fb"
+printf '%s\n' 'project: fb' 'secrets:' \
+  '  NPM_TOKEN:' '    tier: run' '    fallback: user' \
+  '  GH_TOKEN:' '    tier: proxy' '    fallback: user' '    env:' '      GH_BASE: "{proxy}"' > secrets.yaml
+out="$("$secret" run -- sh -c 'echo "$NPM_TOKEN|$GH_BASE"' 2>"$work/run.err")"
+check "fallback: run value"    "npm-user|"                                  "$out"
+check "fallback: proxy URL"    "|http://127.0.0.1:$port/user/GH_TOKEN"      "$out"
+check "fallback: stderr note"  "secret: NPM_TOKEN from user"                "$(cat "$work/run.err")"
+check "list: fallback shown"   "fallback"                                   "$("$secret" list | grep user/NPM_TOKEN)"
+check "project secret added"   "stored fb/NPM_TOKEN"                        "$(printf 'npm-fb' | "$secret" set NPM_TOKEN)"
+check "project secret wins"    "npm-fb"                                     "$("$secret" run -- sh -c 'echo "$NPM_TOKEN"' 2>/dev/null)"
+check "list: overridden shown" "overridden by fb"                           "$("$secret" list | grep user/NPM_TOKEN)"
+cd "$work/nofb"
+printf '%s\n' 'project: nofb' 'secrets:' '  NPM_TOKEN:' '    tier: run' > secrets.yaml
+check "no fallback without opt-in" "no secret nofb/NPM_TOKEN" "$("$secret" run -- true 2>&1 || true)"
+check "lock user"              "locked=true"         "$("$secret" lock user)"
+cd "$work/fb"
+check "locked user: fallback refused" "project user is locked" "$("$secret" run -- true 2>&1 || true)"
+mkdir -p "$work/fbown" && cd "$work/fbown"
+printf '%s\n' 'project: fb' 'secrets:' '  NPM_TOKEN:' '    tier: run' '    fallback: user' > secrets.yaml
+check "locked user: own secret works" "npm-fb"       "$("$secret" run -- sh -c 'echo "$NPM_TOKEN"')"
+check "locked user: proxy refused"    "is locked"    "$(curl -s "http://127.0.0.1:$port/user/GH_TOKEN/x")"
+check "unlock user"            "locked=false"        "$("$secret" unlock user)"
+cd "$work/elsewhere"
+check "run --user needs manifest" "secret init --user" "$("$secret" run --user -- true 2>&1 || true)"
+check "init --user"            "user.yaml"           "$("$secret" init --user)"
+printf '%s\n' 'project: user' 'secrets:' '  NPM_TOKEN:' '    tier: run' > "$XDG_CONFIG_HOME/secretd/user.yaml"
+check "run --user"             "npm-user"            "$("$secret" run --user -- sh -c 'echo "$NPM_TOKEN"')"
+check "user value unchanged"   "npm-user"            "$(cd "$work/fb" && rm secrets.yaml && printf '%s\n' 'project: fb2' 'secrets:' '  NPM_TOKEN:' '    tier: run' '    fallback: user' > secrets.yaml && "$secret" run -- sh -c 'echo "$NPM_TOKEN"' 2>/dev/null)"
+
 # --- root and audit ---
 check "root commands need sudo" "needs root" "$("$secret" reveal demo/DB_PASSWORD 2>&1 || true)"
-if grep -q 'pw-123\|sk-fake\|sk_test_abc' "$work/state/audit.log"; then fail "audit log has a value"; else ok "audit log has no values"; fi
+if grep -q 'pw-123\|sk-fake\|sk_test_abc\|npm-user\|gh-user\|npm-fb' "$work/state/audit.log"; then fail "audit log has a value"; else ok "audit log has no values"; fi
+check "audit: fallback recorded" '"detail":"run from user"' "$(cat "$work/state/audit.log")"
 check "audit log written" '"op":"resolve"' "$(cat "$work/state/audit.log")"
 if grep -aq 'pw-123\|sk-fake' "$work/state/store.enc"; then fail "store file has plaintext"; else ok "store file is encrypted"; fi
 

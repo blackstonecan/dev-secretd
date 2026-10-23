@@ -49,9 +49,12 @@ type ResolveRequest struct {
 type ResolveItem struct {
 	Name string     `json:"name"`
 	Tier store.Tier `json:"tier"` // what the manifest expects; must match the store
+	// "user": use user/NAME when the project has no NAME. Empty: no fallback.
+	Fallback string `json:"fallback,omitempty"`
 }
 
 type Resolved struct {
+	Project string     `json:"project"` // where the secret came from: the project or "user"
 	Name    string     `json:"name"`
 	Tier    store.Tier `json:"tier"`
 	Kind    store.Kind `json:"kind,omitempty"`
@@ -181,7 +184,26 @@ func (s *Server) resolve(w http.ResponseWriter, r *http.Request) {
 	}
 	out := make([]Resolved, 0, len(req.Items))
 	for _, it := range req.Items {
+		fallback := it.Fallback == store.UserProject && req.Project != store.UserProject
+		if it.Fallback != "" && !fallback {
+			fail(http.StatusBadRequest, fmt.Errorf("%s: invalid fallback %q for project %s", it.Name, it.Fallback, req.Project))
+			return
+		}
 		sec, err := s.Store.Get(req.Project, it.Name)
+		// Only a missing project secret falls back. A project secret that exists
+		// always wins, and its errors (a tier mismatch) are never skipped.
+		if errors.Is(err, store.ErrNotFound) && fallback {
+			if s.State.IsLocked(store.UserProject) {
+				fail(http.StatusForbidden, fmt.Errorf("%s: project %s is locked", it.Name, store.UserProject))
+				return
+			}
+			sec, err = s.Store.Get(store.UserProject, it.Name)
+			if errors.Is(err, store.ErrNotFound) {
+				fail(http.StatusNotFound, fmt.Errorf("no secret %s/%s or %s/%s (add one with `secret set`)",
+					req.Project, it.Name, store.UserProject, it.Name))
+				return
+			}
+		}
 		if errors.Is(err, store.ErrNotFound) {
 			fail(http.StatusNotFound, fmt.Errorf("no secret %s/%s (add it with `secret set`)", req.Project, it.Name))
 			return
@@ -195,7 +217,7 @@ func (s *Server) resolve(w http.ResponseWriter, r *http.Request) {
 			fail(http.StatusConflict, fmt.Errorf("%s: the manifest says tier %s, the store says %s", sec.Key(), it.Tier, sec.Tier))
 			return
 		}
-		res := Resolved{Name: sec.Name, Tier: sec.Tier, Kind: sec.Kind}
+		res := Resolved{Project: sec.Project, Name: sec.Name, Tier: sec.Tier, Kind: sec.Kind}
 		if sec.Tier == store.TierProxy {
 			res.BaseURL = proxy.BaseURL(s.ProxyAddr, sec.Project, sec.Name)
 		} else {
@@ -204,7 +226,11 @@ func (s *Server) resolve(w http.ResponseWriter, r *http.Request) {
 		out = append(out, res)
 	}
 	for _, it := range out {
-		s.log(r, "resolve", req.Project, it.Name, string(it.Tier), nil)
+		detail := string(it.Tier)
+		if it.Project != req.Project {
+			detail += " from " + it.Project
+		}
+		s.log(r, "resolve", req.Project, it.Name, detail, nil)
 	}
 	writeJSON(w, out)
 }

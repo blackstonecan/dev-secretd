@@ -49,26 +49,43 @@ func projectFor(flagValue string) (string, *manifest.Manifest, error) {
 func cmdInit(args []string) error {
 	fs := flag.NewFlagSet("init", flag.ContinueOnError)
 	project := fs.String("project", "", "project name")
+	user := fs.Bool("user", false, "")
 	if err := fs.Parse(args); err != nil {
 		return usageError{err.Error()}
 	}
-	if !store.ValidProject(*project) {
+	path := manifest.FileName
+	switch {
+	case *user && *project != "":
+		return usageError{"use --project or --user, not both"}
+	case *user:
+		var err error
+		if path, err = manifest.UserPath(); err != nil {
+			return err
+		}
+		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+			return err
+		}
+		*project = store.UserProject
+	case *project == store.UserProject:
+		return usageError{"\"user\" is the user scope, not a project: use `secret init --user`"}
+	case !store.ValidProject(*project):
 		return usageError{"--project is required (lowercase letters, digits, . _ -)"}
 	}
-	if _, err := os.Stat(manifest.FileName); err == nil {
-		return fmt.Errorf("%s already exists", manifest.FileName)
+	if _, err := os.Stat(path); err == nil {
+		return fmt.Errorf("%s already exists", path)
 	}
-	m := &manifest.Manifest{Project: *project, Secrets: map[string]manifest.Entry{}, Path: manifest.FileName}
+	m := &manifest.Manifest{Project: *project, Secrets: map[string]manifest.Entry{}, Path: path}
 	if err := m.Save(); err != nil {
 		return err
 	}
-	fmt.Printf("made %s for project %s\n", manifest.FileName, *project)
+	fmt.Printf("made %s for project %s\n", path, *project)
 	return nil
 }
 
 func cmdSet(args []string) error {
 	fs := flag.NewFlagSet("set", flag.ContinueOnError)
 	project := fs.String("project", "", "")
+	user := fs.Bool("user", false, "")
 	isFile := fs.Bool("file", false, "")
 	host := fs.String("host", "", "")
 	header := fs.String("header", "", "")
@@ -80,6 +97,12 @@ func cmdSet(args []string) error {
 	}
 	if name == "" || fs.NArg() > 0 {
 		return usageError{"usage: secret set NAME [flags]"}
+	}
+	if *user {
+		if *project != "" {
+			return usageError{"use --project or --user, not both"}
+		}
+		*project = store.UserProject
 	}
 	p, m, err := projectFor(*project)
 	if err != nil {
@@ -110,6 +133,11 @@ func cmdSet(args []string) error {
 		return err
 	}
 	fmt.Printf("stored %s/%s (tier %s)\n", p, name, req.Tier)
+	if p == store.UserProject {
+		fmt.Printf("projects use it with `fallback: user` in their secrets.yaml entry for %s;\n"+
+			"a project secret of the same name always wins\n", name)
+		return nil
+	}
 	if m != nil && m.Project == p {
 		if e, ok := m.Secrets[name]; ok {
 			if e.Tier != req.Tier {
@@ -175,9 +203,10 @@ func cmdList(args []string) error {
 		return usageError{err.Error()}
 	}
 	p := ""
+	var m *manifest.Manifest
 	if !*all {
 		var err error
-		if p, _, err = projectFor(*project); err != nil {
+		if p, m, err = projectFor(*project); err != nil {
 			return err
 		}
 	}
@@ -189,8 +218,36 @@ func cmdList(args []string) error {
 	if err != nil {
 		return err
 	}
+	// User-scope secrets this project's manifest falls back to.
+	notes := map[string]string{}
+	if m != nil && m.Project == p && p != store.UserProject {
+		own := map[string]bool{}
+		for _, s := range list {
+			own[s.Name] = true
+		}
+		var users []api.Info
+		for _, n := range m.Names() {
+			if m.Secrets[n].Fallback != store.UserProject {
+				continue
+			}
+			if users == nil {
+				if users, err = c.List(store.UserProject); err != nil {
+					return err
+				}
+			}
+			for _, s := range users {
+				if s.Name == n {
+					list = append(list, s)
+					notes[s.Name] = "fallback"
+					if own[n] {
+						notes[s.Name] = "overridden by " + p
+					}
+				}
+			}
+		}
+	}
 	w := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
-	fmt.Fprintln(w, "SECRET\tTIER\tUSE\tLOCKED\tUPDATED")
+	fmt.Fprintln(w, "SECRET\tTIER\tUSE\tLOCKED\tUPDATED\tNOTE")
 	for _, s := range list {
 		use := string(s.Kind)
 		if s.Binding != nil {
@@ -200,7 +257,11 @@ func cmdList(args []string) error {
 				use = s.Binding.Host + " query " + s.Binding.Query
 			}
 		}
-		fmt.Fprintf(w, "%s/%s\t%s\t%s\t%v\t%s\n", s.Project, s.Name, s.Tier, use, s.Locked, s.UpdatedAt.Format("2006-01-02"))
+		note := ""
+		if s.Project == store.UserProject && p != store.UserProject {
+			note = notes[s.Name]
+		}
+		fmt.Fprintf(w, "%s/%s\t%s\t%s\t%v\t%s\t%s\n", s.Project, s.Name, s.Tier, use, s.Locked, s.UpdatedAt.Format("2006-01-02"), note)
 	}
 	return w.Flush()
 }
@@ -208,18 +269,27 @@ func cmdList(args []string) error {
 func cmdRun(args []string) (int, error) {
 	fs := flag.NewFlagSet("run", flag.ContinueOnError)
 	project := fs.String("project", "", "")
+	user := fs.Bool("user", false, "")
 	if err := fs.Parse(args); err != nil {
 		return 0, usageError{err.Error()}
 	}
 	command := fs.Args()
 	if len(command) == 0 {
-		return 0, usageError{"usage: secret run [--project P] -- CMD..."}
+		return 0, usageError{"usage: secret run [--project P | --user] -- CMD..."}
 	}
-	m, err := manifest.Find(".")
-	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return 0, usageError{"no secrets.yaml in this folder or its parents"}
+	var m *manifest.Manifest
+	var err error
+	if *user {
+		if *project != "" {
+			return 0, usageError{"use --project or --user, not both"}
 		}
+		if m, err = manifest.LoadUser(); errors.Is(err, os.ErrNotExist) {
+			return 0, usageError{"no user manifest: make it with `secret init --user`"}
+		}
+	} else if m, err = manifest.Find("."); errors.Is(err, os.ErrNotExist) {
+		return 0, usageError{"no secrets.yaml in this folder or its parents"}
+	}
+	if err != nil {
 		return 0, err
 	}
 	if *project != "" && *project != m.Project {
@@ -228,7 +298,8 @@ func cmdRun(args []string) (int, error) {
 
 	req := api.ResolveRequest{Project: m.Project}
 	for _, n := range m.Names() {
-		req.Items = append(req.Items, api.ResolveItem{Name: n, Tier: m.Secrets[n].Tier})
+		e := m.Secrets[n]
+		req.Items = append(req.Items, api.ResolveItem{Name: n, Tier: e.Tier, Fallback: e.Fallback})
 	}
 	var resolved []api.Resolved
 	if len(req.Items) > 0 {
@@ -238,6 +309,11 @@ func cmdRun(args []string) (int, error) {
 		}
 		if resolved, err = c.Resolve(req); err != nil {
 			return 0, err
+		}
+	}
+	for _, r := range resolved {
+		if r.Project != m.Project {
+			fmt.Fprintf(os.Stderr, "secret: %s from %s\n", r.Name, r.Project)
 		}
 	}
 	env, err := runenv.Build(m, resolved, os.Getenv("XDG_RUNTIME_DIR"))
@@ -299,6 +375,9 @@ func cmdImport(args []string) error {
 	p, m, err := projectFor(*project)
 	if err != nil {
 		return err
+	}
+	if p == store.UserProject {
+		return usageError{"import moves a project's .env; add user-scope secrets with `secret set NAME --user`"}
 	}
 	if m == nil {
 		m = &manifest.Manifest{Project: p, Secrets: map[string]manifest.Entry{}, Path: filepath.Join(filepath.Dir(file), manifest.FileName)}
