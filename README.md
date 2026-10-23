@@ -53,6 +53,12 @@ sudo -k; sudo true                 # sudo now remembers your password
 /usr/bin/sudo secret reveal x/Y    # must ask for the password again
 ```
 
+Claude Code skill (teaches agents these rules; run as your user):
+
+```bash
+ln -sfn "$PWD/skill/secretd" ~/.claude/skills/secretd
+```
+
 Remove: `sudo bash install/setup.sh --uninstall` (keeps the key and the store)
 or `--purge` (deletes everything).
 
