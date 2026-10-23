@@ -302,6 +302,13 @@ func TestPublicValues(t *testing.T) {
 	if _, err := c.Resolve(ResolveRequest{Project: "demo", Items: []ResolveItem{{Name: "GITHUB_USERNAME", Tier: store.TierPublic, Fallback: "none"}}}); err == nil {
 		t.Fatal("fallback none got the user's public value")
 	}
+	// A missing value names each scope once.
+	if _, err := c.Get("user", "MISSING"); err == nil || err.Error() != "no public value user/MISSING (add one with `secret set MISSING VALUE --public`)" {
+		t.Fatalf("missing in user scope: %v", err)
+	}
+	if _, err := c.Get("demo", "MISSING"); err == nil || !strings.Contains(err.Error(), "no public value demo/MISSING or user/MISSING") {
+		t.Fatalf("missing in project: %v", err)
+	}
 	// The project's own value wins.
 	must(t, c.Set(SetRequest{Project: "demo", Name: "GITHUB_USERNAME", Tier: store.TierPublic, Value: "demo-bot"}))
 	if in, _ := c.Get("demo", "GITHUB_USERNAME"); in.Value != "demo-bot" {

@@ -205,8 +205,11 @@ func (s *Server) get(w http.ResponseWriter, r *http.Request) {
 	sec, err := s.Store.ResolvePublic(project, name)
 	switch {
 	case errors.Is(err, store.ErrNotFound):
-		writeErr(w, http.StatusNotFound, fmt.Errorf("no public value %s/%s or %s/%s (add one with `secret set NAME VALUE --public`)",
-			project, name, store.UserProject, name))
+		where := project + "/" + name
+		if project != store.UserProject {
+			where += " or " + store.UserProject + "/" + name
+		}
+		writeErr(w, http.StatusNotFound, fmt.Errorf("no public value %s (add one with `secret set %s VALUE --public`)", where, name))
 	case err != nil:
 		writeErr(w, http.StatusForbidden, err)
 	default:
