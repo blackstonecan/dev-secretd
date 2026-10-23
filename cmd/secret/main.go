@@ -24,6 +24,8 @@ User commands:
       --project P      default: from secrets.yaml
       --user           user scope: projects use it with "fallback: user"
                        in secrets.yaml; their own secret of the name wins
+      --default        with --user: every project that lists the name gets
+                       it (unless it has its own or says "fallback: none")
       --file           run-tier file secret (the env var holds a temp file path)
       --host H         proxy tier: upstream host (HTTPS)
       --header X       proxy tier: header name, for example x-api-key
@@ -44,6 +46,8 @@ Root commands (run with: /usr/bin/sudo secret ...):
   rm P/NAME            delete a secret
   bind P/NAME [--host H --header X --format F | --query Q | --run [--file]]
                        change the tier or the binding
+  bind user/NAME --default | --no-default
+                       make a user-scope secret a default for all projects, or not
   export --recipient AGE_PUBLIC_KEY --out FILE
                        encrypted backup of all secrets (decrypt with age)
 `

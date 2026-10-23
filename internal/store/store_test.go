@@ -65,6 +65,39 @@ func TestCreateNeverReplaces(t *testing.T) {
 	}
 }
 
+func TestSetDefault(t *testing.T) {
+	s, _ := newStore(t)
+	user := Secret{Project: UserProject, Name: "GITHUB_TOKEN", Tier: TierRun, Kind: KindEnv, Value: "gh"}
+	if err := s.Create(user, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SetDefault(UserProject, "GITHUB_TOKEN", true, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	// Rotating and rebinding keep the default.
+	if err := s.Rotate(UserProject, "GITHUB_TOKEN", "gh2", time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := s.Get(UserProject, "GITHUB_TOKEN"); !got.Default || got.Value != "gh2" {
+		t.Fatalf("after rotate: %+v", got)
+	}
+	if err := s.SetDefault(UserProject, "GITHUB_TOKEN", false, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := s.Get(UserProject, "GITHUB_TOKEN"); got.Default {
+		t.Fatal("default not cleared")
+	}
+	if err := s.Create(runSecret("TOKEN", "a"), time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SetDefault("demo", "TOKEN", true, time.Now()); err == nil {
+		t.Fatal("a project secret became a default")
+	}
+	if err := s.SetDefault(UserProject, "MISSING", true, time.Now()); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("want ErrNotFound, got %v", err)
+	}
+}
+
 func TestFileIsEncrypted(t *testing.T) {
 	s, dir := newStore(t)
 	if err := s.Create(runSecret("TOKEN", "super-secret-value"), time.Now()); err != nil {
@@ -95,6 +128,7 @@ func TestValidate(t *testing.T) {
 		"bad host":          {Project: "demo", Name: "A", Tier: TierProxy, Value: "v", Binding: &Binding{Host: "h.com/evil", Header: "x"}},
 		"format without {}": {Project: "demo", Name: "A", Tier: TierProxy, Value: "v", Binding: &Binding{Host: "h.com", Header: "x", Format: "Bearer"}},
 		"unknown tier":      {Project: "demo", Name: "A", Tier: "plain", Value: "v"},
+		"project default":   {Project: "demo", Name: "A", Tier: TierRun, Kind: KindEnv, Value: "v", Default: true},
 	}
 	for name, sec := range cases {
 		if err := sec.Validate(); err == nil {

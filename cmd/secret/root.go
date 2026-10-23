@@ -119,12 +119,30 @@ func rootBind(s *store.Store, audit *state.Audit, who string, args []string) err
 	query := fs.String("query", "", "")
 	run := fs.Bool("run", false, "")
 	isFile := fs.Bool("file", false, "")
+	def := fs.Bool("default", false, "")
+	noDef := fs.Bool("no-default", false, "")
 	if err := fs.Parse(rest); err != nil {
 		return usageError{err.Error()}
 	}
 	p, n, err := splitKey(key)
 	if err != nil {
 		return err
+	}
+	if *def || *noDef {
+		if *def && *noDef || *run || *isFile || *host != "" || *header != "" || *format != "" || *query != "" {
+			return usageError{"use --default or --no-default alone"}
+		}
+		err = s.SetDefault(p, n, *def, time.Now())
+		audit.Log(state.Event{Op: "bind", Project: p, Name: n, Caller: who, Detail: "default=" + strconv.FormatBool(*def), Error: errString(err)})
+		if err != nil {
+			return err
+		}
+		if *def {
+			fmt.Printf("%s/%s is now a default: projects that list %s get it unless they have their own or say `fallback: none`\n", p, n, n)
+		} else {
+			fmt.Printf("%s/%s is no longer a default: projects need `fallback: user` to use it\n", p, n)
+		}
+		return nil
 	}
 	tier, kind := store.TierProxy, store.Kind("")
 	var b *store.Binding

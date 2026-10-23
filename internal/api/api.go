@@ -27,6 +27,7 @@ type SetRequest struct {
 	Kind    store.Kind     `json:"kind,omitempty"`
 	Binding *store.Binding `json:"binding,omitempty"`
 	Value   string         `json:"value"`
+	Default bool           `json:"default,omitempty"` // user scope only
 }
 
 // Info describes a secret without its value.
@@ -36,6 +37,7 @@ type Info struct {
 	Tier      store.Tier     `json:"tier"`
 	Kind      store.Kind     `json:"kind,omitempty"`
 	Binding   *store.Binding `json:"binding,omitempty"`
+	Default   bool           `json:"default,omitempty"`
 	CreatedAt time.Time      `json:"created_at"`
 	UpdatedAt time.Time      `json:"updated_at"`
 	Locked    bool           `json:"locked"`
@@ -49,7 +51,8 @@ type ResolveRequest struct {
 type ResolveItem struct {
 	Name string     `json:"name"`
 	Tier store.Tier `json:"tier"` // what the manifest expects; must match the store
-	// "user": use user/NAME when the project has no NAME. Empty: no fallback.
+	// When the project has no NAME: "user" uses user/NAME, "" uses user/NAME
+	// only if it is a default, "none" never falls back.
 	Fallback string `json:"fallback,omitempty"`
 }
 
@@ -139,7 +142,7 @@ func (s *Server) set(w http.ResponseWriter, r *http.Request) {
 	if req.Tier == store.TierRun && req.Kind == "" {
 		req.Kind = store.KindEnv
 	}
-	sec := store.Secret{Project: req.Project, Name: req.Name, Tier: req.Tier, Kind: req.Kind, Binding: req.Binding, Value: req.Value}
+	sec := store.Secret{Project: req.Project, Name: req.Name, Tier: req.Tier, Kind: req.Kind, Binding: req.Binding, Value: req.Value, Default: req.Default}
 	err := s.Store.Create(sec, s.now())
 	s.log(r, "set", req.Project, req.Name, string(req.Tier), err)
 	if err != nil {
@@ -162,7 +165,7 @@ func (s *Server) list(w http.ResponseWriter, r *http.Request) {
 	out := make([]Info, 0, len(secs))
 	for _, sec := range secs {
 		out = append(out, Info{
-			Project: sec.Project, Name: sec.Name, Tier: sec.Tier, Kind: sec.Kind, Binding: sec.Binding,
+			Project: sec.Project, Name: sec.Name, Tier: sec.Tier, Kind: sec.Kind, Binding: sec.Binding, Default: sec.Default,
 			CreatedAt: sec.CreatedAt, UpdatedAt: sec.UpdatedAt, Locked: s.State.IsLocked(sec.Project),
 		})
 	}
@@ -184,24 +187,29 @@ func (s *Server) resolve(w http.ResponseWriter, r *http.Request) {
 	}
 	out := make([]Resolved, 0, len(req.Items))
 	for _, it := range req.Items {
-		fallback := it.Fallback == store.UserProject && req.Project != store.UserProject
-		if it.Fallback != "" && !fallback {
+		valid := it.Fallback == "" || (req.Project != store.UserProject && (it.Fallback == store.UserProject || it.Fallback == "none"))
+		if !valid {
 			fail(http.StatusBadRequest, fmt.Errorf("%s: invalid fallback %q for project %s", it.Name, it.Fallback, req.Project))
 			return
 		}
 		sec, err := s.Store.Get(req.Project, it.Name)
 		// Only a missing project secret falls back. A project secret that exists
 		// always wins, and its errors (a tier mismatch) are never skipped.
-		if errors.Is(err, store.ErrNotFound) && fallback {
-			if s.State.IsLocked(store.UserProject) {
-				fail(http.StatusForbidden, fmt.Errorf("%s: project %s is locked", it.Name, store.UserProject))
-				return
-			}
-			sec, err = s.Store.Get(store.UserProject, it.Name)
-			if errors.Is(err, store.ErrNotFound) {
+		if errors.Is(err, store.ErrNotFound) && req.Project != store.UserProject && it.Fallback != "none" {
+			u, uerr := s.Store.Get(store.UserProject, it.Name)
+			switch {
+			case uerr == nil && (it.Fallback == store.UserProject || u.Default):
+				if s.State.IsLocked(store.UserProject) {
+					fail(http.StatusForbidden, fmt.Errorf("%s: project %s is locked", it.Name, store.UserProject))
+					return
+				}
+				sec, err = u, nil
+			case errors.Is(uerr, store.ErrNotFound) && it.Fallback == store.UserProject:
 				fail(http.StatusNotFound, fmt.Errorf("no secret %s/%s or %s/%s (add one with `secret set`)",
 					req.Project, it.Name, store.UserProject, it.Name))
 				return
+			case uerr != nil && !errors.Is(uerr, store.ErrNotFound):
+				err = uerr
 			}
 		}
 		if errors.Is(err, store.ErrNotFound) {

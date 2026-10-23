@@ -86,6 +86,7 @@ func cmdSet(args []string) error {
 	fs := flag.NewFlagSet("set", flag.ContinueOnError)
 	project := fs.String("project", "", "")
 	user := fs.Bool("user", false, "")
+	def := fs.Bool("default", false, "")
 	isFile := fs.Bool("file", false, "")
 	host := fs.String("host", "", "")
 	header := fs.String("header", "", "")
@@ -104,12 +105,15 @@ func cmdSet(args []string) error {
 		}
 		*project = store.UserProject
 	}
+	if *def && *project != store.UserProject {
+		return usageError{"--default is for user-scope secrets: add --user"}
+	}
 	p, m, err := projectFor(*project)
 	if err != nil {
 		return err
 	}
 
-	req := api.SetRequest{Project: p, Name: name, Tier: store.TierRun, Kind: store.KindEnv}
+	req := api.SetRequest{Project: p, Name: name, Tier: store.TierRun, Kind: store.KindEnv, Default: *def}
 	if *host != "" || *header != "" || *query != "" {
 		if *isFile {
 			return usageError{"--file is for run-tier secrets only"}
@@ -134,8 +138,13 @@ func cmdSet(args []string) error {
 	}
 	fmt.Printf("stored %s/%s (tier %s)\n", p, name, req.Tier)
 	if p == store.UserProject {
-		fmt.Printf("projects use it with `fallback: user` in their secrets.yaml entry for %s;\n"+
-			"a project secret of the same name always wins\n", name)
+		if *def {
+			fmt.Printf("it is a default: every project whose secrets.yaml lists %s gets it, unless the\n"+
+				"project has its own %s or its entry says `fallback: none`\n", name, name)
+		} else {
+			fmt.Printf("projects use it with `fallback: user` in their secrets.yaml entry for %s;\n"+
+				"a project secret of the same name always wins\n", name)
+		}
 		return nil
 	}
 	if m != nil && m.Project == p {
@@ -225,24 +234,22 @@ func cmdList(args []string) error {
 		for _, s := range list {
 			own[s.Name] = true
 		}
-		var users []api.Info
-		for _, n := range m.Names() {
-			if m.Secrets[n].Fallback != store.UserProject {
+		users, err := c.List(store.UserProject)
+		if err != nil {
+			return err
+		}
+		for _, s := range users {
+			e, listed := m.Secrets[s.Name]
+			if !listed || e.Fallback == "none" || (e.Fallback != store.UserProject && !s.Default) {
 				continue
 			}
-			if users == nil {
-				if users, err = c.List(store.UserProject); err != nil {
-					return err
-				}
+			list = append(list, s)
+			notes[s.Name] = "fallback"
+			if s.Default && e.Fallback == "" {
+				notes[s.Name] = "default"
 			}
-			for _, s := range users {
-				if s.Name == n {
-					list = append(list, s)
-					notes[s.Name] = "fallback"
-					if own[n] {
-						notes[s.Name] = "overridden by " + p
-					}
-				}
+			if own[s.Name] {
+				notes[s.Name] = "overridden by " + p
 			}
 		}
 	}
@@ -258,8 +265,12 @@ func cmdList(args []string) error {
 			}
 		}
 		note := ""
-		if s.Project == store.UserProject && p != store.UserProject {
-			note = notes[s.Name]
+		if s.Project == store.UserProject {
+			if p != store.UserProject && p != "" {
+				note = notes[s.Name]
+			} else if s.Default {
+				note = "default for all projects"
+			}
 		}
 		fmt.Fprintf(w, "%s/%s\t%s\t%s\t%v\t%s\t%s\n", s.Project, s.Name, s.Tier, use, s.Locked, s.UpdatedAt.Format("2006-01-02"), note)
 	}

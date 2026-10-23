@@ -118,6 +118,29 @@ secrets:
 - Without `fallback: user`, a missing project secret is an error, so a project
   that should use its own token (another account's repos) never silently gets
   yours. Give it its own: `secret set GITHUB_TOKEN` in that project.
+
+**Defaults.** For a secret most projects use, make it a default: then every
+project that lists the name gets it with no `fallback` line, unless it has
+its own secret of that name.
+
+```bash
+secret set GITHUB_TOKEN --user --default --host api.github.com --header Authorization --format "Bearer {}"
+/usr/bin/sudo secret bind user/GITHUB_TOKEN --default      # an existing secret
+/usr/bin/sudo secret bind user/GITHUB_TOKEN --no-default   # back to opt-in
+```
+
+A project that must never get it (a client's repos) says `fallback: none`:
+then a missing project secret is an error again.
+
+| Entry says | Project has its own | Project has none |
+|---|---|---|
+| nothing | its own | the user secret if it is a default, else an error |
+| `fallback: user` | its own | the user secret |
+| `fallback: none` | its own | an error |
+
+Turning a default on or off for an existing secret is root-only, like
+`bind`; `secret set --user --default` can only make a new one.
+
 - Nothing is copied or overwritten: the fallback is a lookup at `secret run`
   time. The user value changes only with `sudo secret rotate user/NAME`.
 - Only a *missing* project secret falls back. A project secret with the wrong

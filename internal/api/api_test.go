@@ -213,6 +213,67 @@ func TestLocksWithFallback(t *testing.T) {
 	}
 }
 
+func TestDefaultUserSecret(t *testing.T) {
+	c, _, dir := startServerDir(t, os.Getuid())
+	must(t, c.Set(SetRequest{Project: store.UserProject, Name: "GITHUB_TOKEN", Tier: store.TierProxy, Value: "gh-user", Default: true,
+		Binding: &store.Binding{Host: "api.github.com", Header: "Authorization", Format: "Bearer {}"}}))
+	must(t, c.Set(SetRequest{Project: store.UserProject, Name: "NPM_TOKEN", Tier: store.TierRun, Value: "npm-user"}))
+	gh := ResolveItem{Name: "GITHUB_TOKEN", Tier: store.TierProxy}
+
+	// A default needs no fallback line.
+	res, err := c.Resolve(ResolveRequest{Project: "demo", Items: []ResolveItem{gh}})
+	must(t, err)
+	if res[0].Project != "user" || res[0].BaseURL != "http://127.0.0.1:7777/user/GITHUB_TOKEN" {
+		t.Fatalf("default: %+v", res[0])
+	}
+	// A user secret that is not a default still needs `fallback: user`.
+	if _, err := c.Resolve(ResolveRequest{Project: "demo", Items: []ResolveItem{{Name: "NPM_TOKEN", Tier: store.TierRun}}}); err == nil || !strings.Contains(err.Error(), "no secret demo/NPM_TOKEN") {
+		t.Fatalf("non-default without opt-in: %v", err)
+	}
+	// `fallback: none` opts out of a default.
+	if _, err := c.Resolve(ResolveRequest{Project: "client", Items: []ResolveItem{{Name: "GITHUB_TOKEN", Tier: store.TierProxy, Fallback: "none"}}}); err == nil || !strings.Contains(err.Error(), "no secret client/GITHUB_TOKEN") {
+		t.Fatalf("fallback none: %v", err)
+	}
+	// The project's own secret wins over a default, even with `fallback: none`.
+	must(t, c.Set(SetRequest{Project: "client", Name: "GITHUB_TOKEN", Tier: store.TierProxy, Value: "gh-client",
+		Binding: &store.Binding{Host: "api.github.com", Header: "Authorization", Format: "Bearer {}"}}))
+	for _, fb := range []string{"", "none", "user"} {
+		res, err := c.Resolve(ResolveRequest{Project: "client", Items: []ResolveItem{{Name: "GITHUB_TOKEN", Tier: store.TierProxy, Fallback: fb}}})
+		must(t, err)
+		if res[0].Project != "client" {
+			t.Fatalf("fallback %q: own secret did not win: %+v", fb, res[0])
+		}
+	}
+	// A locked user scope blocks the default.
+	must(t, c.Lock("user", true))
+	if _, err := c.Resolve(ResolveRequest{Project: "demo", Items: []ResolveItem{gh}}); err == nil || !strings.Contains(err.Error(), "project user is locked") {
+		t.Fatalf("locked default: %v", err)
+	}
+	must(t, c.Lock("user", false))
+
+	list, err := c.List("user")
+	must(t, err)
+	if !list[0].Default || list[1].Default {
+		t.Fatalf("list default flags: %+v", list)
+	}
+	raw, err := os.ReadFile(filepath.Join(dir, "audit.log"))
+	must(t, err)
+	if !strings.Contains(string(raw), `"project":"demo","name":"GITHUB_TOKEN","caller"`) || !strings.Contains(string(raw), `"detail":"proxy from user"`) {
+		t.Fatalf("audit does not show the default fallback:\n%s", raw)
+	}
+}
+
+func TestDefaultOnlyForUserScope(t *testing.T) {
+	c, _ := startServer(t, os.Getuid())
+	err := c.Set(SetRequest{Project: "demo", Name: "TOKEN", Tier: store.TierRun, Value: "a", Default: true})
+	if err == nil || !strings.Contains(err.Error(), "only user secrets can be a default") {
+		t.Fatalf("want refusal, got %v", err)
+	}
+	if _, err := c.Resolve(ResolveRequest{Project: "user", Items: []ResolveItem{{Name: "TOKEN", Tier: store.TierRun, Fallback: "none"}}}); err == nil || !strings.Contains(err.Error(), "invalid fallback") {
+		t.Fatalf("fallback in the user project: %v", err)
+	}
+}
+
 func TestOtherUserIsRefused(t *testing.T) {
 	if os.Getuid() == 0 {
 		t.Skip("root is always allowed")

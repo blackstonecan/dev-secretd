@@ -17,11 +17,11 @@ func write(t *testing.T, body string) string {
 }
 
 func TestFallback(t *testing.T) {
-	m, err := Load(write(t, "project: demo\nsecrets:\n  NPM_TOKEN:\n    tier: run\n    fallback: user\n  DB_PASSWORD:\n    tier: run\n"))
+	m, err := Load(write(t, "project: demo\nsecrets:\n  NPM_TOKEN:\n    tier: run\n    fallback: user\n  DB_PASSWORD:\n    tier: run\n  GH:\n    tier: run\n    fallback: none\n"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if m.Secrets["NPM_TOKEN"].Fallback != "user" || m.Secrets["DB_PASSWORD"].Fallback != "" {
+	if m.Secrets["NPM_TOKEN"].Fallback != "user" || m.Secrets["DB_PASSWORD"].Fallback != "" || m.Secrets["GH"].Fallback != "none" {
 		t.Fatalf("fallback: %+v", m.Secrets)
 	}
 }
@@ -30,6 +30,7 @@ func TestFallbackErrors(t *testing.T) {
 	for body, want := range map[string]string{
 		"project: demo\nsecrets:\n  NPM_TOKEN:\n    tier: run\n    fallback: team\n": `fallback must be "user"`,
 		"project: user\nsecrets:\n  NPM_TOKEN:\n    tier: run\n    fallback: user\n": "the user manifest has no fallback",
+		"project: user\nsecrets:\n  NPM_TOKEN:\n    tier: run\n    fallback: none\n": "the user manifest has no fallback",
 	} {
 		if _, err := Load(write(t, body)); err == nil || !strings.Contains(err.Error(), want) {
 			t.Errorf("want %q, got %v", want, err)

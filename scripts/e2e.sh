@@ -115,9 +115,26 @@ printf '%s\n' 'project: user' 'secrets:' '  NPM_TOKEN:' '    tier: run' > "$XDG_
 check "run --user"             "npm-user"            "$("$secret" run --user -- sh -c 'echo "$NPM_TOKEN"')"
 check "user value unchanged"   "npm-user"            "$(cd "$work/fb" && rm secrets.yaml && printf '%s\n' 'project: fb2' 'secrets:' '  NPM_TOKEN:' '    tier: run' '    fallback: user' > secrets.yaml && "$secret" run -- sh -c 'echo "$NPM_TOKEN"' 2>/dev/null)"
 
+# --- user-scope defaults ---
+mkdir -p "$work/dflt" "$work/client"
+check "set --default needs --user" "add --user"          "$(printf 'x' | "$secret" set GH_DEFAULT --default 2>&1 || true)"
+check "set --user --default"       "it is a default"     "$(printf 'ghd-user' | "$secret" set GH_DEFAULT --user --default)"
+check "list --all marks default"   "default for all projects" "$("$secret" list --all | grep user/GH_DEFAULT)"
+cd "$work/dflt"
+printf '%s\n' 'project: dflt' 'secrets:' '  GH_DEFAULT:' '    tier: run' > secrets.yaml
+check "default: no fallback line"  "ghd-user"            "$("$secret" run -- sh -c 'echo "$GH_DEFAULT"' 2>/dev/null)"
+check "default: stderr note"       "GH_DEFAULT from user" "$("$secret" run -- true 2>&1)"
+check "list: default shown"        "default"             "$("$secret" list | grep user/GH_DEFAULT)"
+cd "$work/client"
+printf '%s\n' 'project: client' 'secrets:' '  GH_DEFAULT:' '    tier: run' '    fallback: none' > secrets.yaml
+check "fallback none refuses default" "no secret client/GH_DEFAULT" "$("$secret" run -- true 2>&1 || true)"
+check "client adds its own"        "stored client/GH_DEFAULT" "$(printf 'ghd-client' | "$secret" set GH_DEFAULT)"
+check "client uses its own"        "ghd-client"          "$("$secret" run -- sh -c 'echo "$GH_DEFAULT"')"
+check "bind --default needs root"  "needs root"          "$("$secret" bind user/GH_DEFAULT --no-default 2>&1 || true)"
+
 # --- root and audit ---
 check "root commands need sudo" "needs root" "$("$secret" reveal demo/DB_PASSWORD 2>&1 || true)"
-if grep -q 'pw-123\|sk-fake\|sk_test_abc\|npm-user\|gh-user\|npm-fb' "$work/state/audit.log"; then fail "audit log has a value"; else ok "audit log has no values"; fi
+if grep -q 'pw-123\|sk-fake\|sk_test_abc\|npm-user\|gh-user\|npm-fb\|ghd-user\|ghd-client' "$work/state/audit.log"; then fail "audit log has a value"; else ok "audit log has no values"; fi
 check "audit: fallback recorded" '"detail":"run from user"' "$(cat "$work/state/audit.log")"
 check "audit log written" '"op":"resolve"' "$(cat "$work/state/audit.log")"
 if grep -aq 'pw-123\|sk-fake' "$work/state/store.enc"; then fail "store file has plaintext"; else ok "store file is encrypted"; fi

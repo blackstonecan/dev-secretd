@@ -14,9 +14,12 @@
 //	  FIREBASE_ADMIN:
 //	    tier: run
 //	    var: GOOGLE_APPLICATION_CREDENTIALS   # a file secret: the var holds the path
+//	  NPM_TOKEN:
+//	    tier: run
+//	    fallback: user       # use user/NPM_TOKEN when this project has none
 //	  GITHUB_TOKEN:
 //	    tier: proxy
-//	    fallback: user       # use user/GITHUB_TOKEN when this project has none
+//	    fallback: none       # never a user-scope default: this project needs its own
 //	    env:
 //	      GITHUB_API_URL: "{proxy}"
 //
@@ -42,8 +45,9 @@ type Entry struct {
 	Tier store.Tier        `yaml:"tier"`
 	Env  map[string]string `yaml:"env,omitempty"` // proxy tier: env vars; "{proxy}" is the base URL
 	Var  string            `yaml:"var,omitempty"` // run tier: env var name (default: the secret name)
-	// Fallback "user": use the user-scope secret when the project has none of
-	// its own. A project secret of the same name always wins.
+	// When the project has no secret of its own: "user" uses the user-scope
+	// secret, "none" never falls back, and empty uses the user-scope secret
+	// only if it is a default. A project secret of the same name always wins.
 	Fallback string `yaml:"fallback,omitempty"`
 }
 
@@ -119,8 +123,8 @@ func (m *Manifest) Validate() error {
 			return fmt.Errorf("%s: %s: tier must be proxy or run", m.Path, name)
 		}
 		if e.Fallback != "" {
-			if e.Fallback != store.UserProject {
-				return fmt.Errorf("%s: %s: fallback must be %q", m.Path, name, store.UserProject)
+			if e.Fallback != store.UserProject && e.Fallback != "none" {
+				return fmt.Errorf("%s: %s: fallback must be %q or \"none\"", m.Path, name, store.UserProject)
 			}
 			if m.Project == store.UserProject {
 				return fmt.Errorf("%s: %s: the user manifest has no fallback", m.Path, name)

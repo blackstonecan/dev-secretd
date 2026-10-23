@@ -50,12 +50,16 @@ type Binding struct {
 }
 
 type Secret struct {
-	Project   string    `json:"project"`
-	Name      string    `json:"name"`
-	Tier      Tier      `json:"tier"`
-	Kind      Kind      `json:"kind,omitempty"`
-	Binding   *Binding  `json:"binding,omitempty"`
-	Value     string    `json:"value"`
+	Project string   `json:"project"`
+	Name    string   `json:"name"`
+	Tier    Tier     `json:"tier"`
+	Kind    Kind     `json:"kind,omitempty"`
+	Binding *Binding `json:"binding,omitempty"`
+	Value   string   `json:"value"`
+	// Default (user scope only): every project whose manifest lists the name
+	// gets this secret when it has none of its own, unless its entry says
+	// `fallback: none`.
+	Default   bool      `json:"default,omitempty"`
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
 }
@@ -94,6 +98,9 @@ func (s *Secret) Validate() error {
 	}
 	if s.Value == "" {
 		return errors.New("empty value")
+	}
+	if s.Default && s.Project != UserProject {
+		return fmt.Errorf("only %s secrets can be a default", UserProject)
 	}
 	switch s.Tier {
 	case TierProxy:
