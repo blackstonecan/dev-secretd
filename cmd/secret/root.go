@@ -117,7 +117,8 @@ func rootBind(s *store.Store, audit *state.Audit, who string, args []string) err
 	host := fs.String("host", "", "")
 	header := fs.String("header", "", "")
 	format := fs.String("format", "", "")
-	basic := fs.String("basic", "", "")
+	basic := fs.Bool("basic", false, "")
+	basicUser := fs.String("basic-user", "", "")
 	query := fs.String("query", "", "")
 	run := fs.Bool("run", false, "")
 	isFile := fs.Bool("file", false, "")
@@ -131,7 +132,7 @@ func rootBind(s *store.Store, audit *state.Audit, who string, args []string) err
 		return err
 	}
 	if *def || *noDef {
-		if *def && *noDef || *run || *isFile || *host != "" || *header != "" || *format != "" || *query != "" || *basic != "" {
+		if *def && *noDef || *run || *isFile || *host != "" || *header != "" || *format != "" || *query != "" || *basic || *basicUser != "" {
 			return usageError{"use --default or --no-default alone"}
 		}
 		err = s.SetDefault(p, n, *def, time.Now())
@@ -155,14 +156,17 @@ func rootBind(s *store.Store, audit *state.Audit, who string, args []string) err
 		}
 	} else {
 		h, extra := store.ParseHosts(*host)
-		b = &store.Binding{Host: h, ExtraHosts: extra, Header: *header, Format: *format, Basic: *basic, Query: *query}
+		b = &store.Binding{Host: h, ExtraHosts: extra, Header: *header, Format: *format, BasicAuth: *basic || *basicUser != "", Basic: *basicUser, Query: *query}
 	}
 	err = s.Rebind(p, n, tier, kind, b, time.Now())
 	detail := string(tier)
 	if b != nil {
 		detail += " " + strings.Join(b.Hosts(), ",")
+		if b.UsesBasic() {
+			detail += " basic"
+		}
 		if b.Basic != "" {
-			detail += " basic " + b.Basic
+			detail += " user=" + b.Basic
 		}
 	}
 	audit.Log(state.Event{Op: "bind", Project: p, Name: n, Caller: who, Detail: detail, Error: errString(err)})

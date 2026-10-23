@@ -134,13 +134,17 @@ check "bind --default needs root"  "needs root"          "$("$secret" bind user/
 
 # --- several hosts, Basic auth ---
 cd "$work/project"
-check "set: hosts + --basic"    "stored demo/GIT_TOKEN"   "$(printf 'git-tok' | "$secret" set GIT_TOKEN --host api.example.com,git.example.com --header Authorization --basic E2E_USERNAME)"
+check "set: hosts + --basic-user" "stored demo/GIT_TOKEN"   "$(printf 'git-tok' | "$secret" set GIT_TOKEN --host api.example.com,git.example.com --header Authorization --basic-user E2E_USERNAME)"
 check "list: hosts and basic"   "api.example.com,git.example.com header Authorization basic user=E2E_USERNAME" "$("$secret" list | grep demo/GIT_TOKEN)"
 check "proxy: username missing" "basic username E2E_USERNAME" "$(curl -s "http://127.0.0.1:$port/demo/GIT_TOKEN/x")"
-check "basic names a value"     "UPPER_SNAKE_CASE"        "$(printf 'x' | "$secret" set GIT_TOKEN2 --host git.example.com --header Authorization --basic someone 2>&1 || true)"
-check "basic needs proxy tier"  "for proxy-tier secrets"  "$(printf 'x' | "$secret" set GIT_TOKEN4 --basic E2E_USERNAME 2>&1 || true)"
-check "basic and format refused" "--basic needs --header and no --format" "$(printf 'x' | "$secret" set GIT_TOKEN5 --host a.example.com --header Authorization --format 'Bearer {}' --basic E2E_USERNAME 2>&1 || true)"
+check "basic-user names a value" "UPPER_SNAKE_CASE"        "$(printf 'x' | "$secret" set GIT_TOKEN2 --host git.example.com --header Authorization --basic-user someone 2>&1 || true)"
+check "basic needs proxy tier"  "for proxy-tier secrets"  "$(printf 'x' | "$secret" set GIT_TOKEN4 --basic 2>&1 || true)"
+check "basic and format refused" "--basic needs --header and no --format" "$(printf 'x' | "$secret" set GIT_TOKEN5 --host a.example.com --header Authorization --format 'Bearer {}' --basic 2>&1 || true)"
 check "duplicate host refused"  "listed twice"            "$(printf 'x' | "$secret" set GIT_TOKEN6 --host a.example.com,A.example.com --header x 2>&1 || true)"
+check "set: plain --basic"      "stored demo/GIT_TOKEN7"  "$(printf 'git-tok' | "$secret" set GIT_TOKEN7 --host git.example.com --header Authorization --basic)"
+list7="$("$secret" list | grep demo/GIT_TOKEN7)"
+check "list: plain basic"       "header Authorization basic" "$list7"
+[[ "$list7" != *user=* ]] && ok "plain basic names no value" || fail "plain basic shows a username link"
 
 # --- public values ---
 mkdir -p "$work/pub" && cd "$work/pub"

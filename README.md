@@ -187,8 +187,8 @@ secret list --all                                          # shows public values
   secret, `get` never prints a private one, a manifest that says `tier: public`
   for a private secret gets a tier error (never the value), and `bind` never
   converts between the two.
-- Public values never go through the proxy; bindings refer to them by name
-  (`--basic NAME`, below).
+- Public values never go through the proxy. A binding can read one by name
+  (`--basic-user NAME`, below), for services that need a real username.
 
 ### Several hosts, and git over HTTPS
 
@@ -196,8 +196,7 @@ One secret can go to several hosts (up to 8, HTTPS only), so one GitHub token
 serves the API and git:
 
 ```bash
-secret set GITHUB_USERNAME blackstonecan --user --public
-/usr/bin/sudo secret bind user/GITHUB_TOKEN --host api.github.com,github.com --header Authorization --basic GITHUB_USERNAME
+/usr/bin/sudo secret bind user/GITHUB_TOKEN --host api.github.com,github.com --header Authorization --basic
 ```
 
 - The first host is the default: `/user/GITHUB_TOKEN/<path>` goes to
@@ -205,24 +204,50 @@ secret set GITHUB_USERNAME blackstonecan --user --public
   the bound hosts picks that host: `/user/GITHUB_TOKEN/github.com/<path>` goes
   to `https://github.com/<path>`. A host that is not bound is never reached.
   In a manifest: `"{proxy}/github.com"`.
-- `--basic NAME` sends `Authorization: Basic base64(USER:token)`, which git
-  over HTTPS needs (GitHub's API accepts it too). USER is the public value
-  NAME, read at each request: the secret's project first, then the user scope.
-  So `client/GITHUB_TOKEN` uses `client/GITHUB_USERNAME` when the project has
-  one, and changing the value takes effect at once. A missing value fails the
-  request before anything is sent.
+- `--basic` sends `Authorization: Basic base64(x-access-token:token)`, which
+  git over HTTPS needs (GitHub's API accepts it too). GitHub takes the account
+  from the token and ignores the username, so a GitHub token needs nothing
+  else.
+- `--basic-user NAME` takes the username from the public value NAME instead,
+  for services that check it (the secret's project first, then the user
+  scope, read at each request; a missing value fails the request before
+  anything is sent).
 - The proxy masks the base64 form in responses as well as the raw value.
 
-Push through the proxy (no token in git). A public repo can keep fetching
-from the normal URL; a private repo fetches through the proxy too:
+#### Your own repos: one git rule
+
+Route every repo of your account through secretd. Remote URLs stay as they
+are, and nothing is stored per repo:
 
 ```bash
-git remote set-url --push origin http://127.0.0.1:7777/user/GITHUB_TOKEN/github.com/OWNER/REPO.git   # push only
-git remote set-url origin http://127.0.0.1:7777/user/GITHUB_TOKEN/github.com/OWNER/REPO.git          # private: fetch too
+git config --global url."http://127.0.0.1:7777/user/GITHUB_TOKEN/github.com/OWNER/".insteadOf "https://github.com/OWNER/"
 ```
 
-A repo for another account points its push URL at its project's own secret
-(`/<project>/GITHUB_TOKEN/github.com/...`), bound the same way.
+Then `git push`, `git pull` and `git clone https://github.com/OWNER/...` go
+through secretd (pushes and private fetches alike). Repos of other owners do
+not match the rule and are never sent your token.
+
+#### Repos of another account
+
+A repo that needs a different account (a client's, a teammate's) gets that
+account's token as its own project secret, and a rule in that repo only:
+
+```bash
+cd ~/path/to/their-repo
+secret init --project client-app            # once, if the project has no secrets.yaml
+secret set GITHUB_TOKEN --host api.github.com,github.com --header Authorization --basic   # their token, typed hidden
+git config url."http://127.0.0.1:7777/client-app/GITHUB_TOKEN/github.com/".insteadOf "https://github.com/"
+```
+
+The rule is in that repo's `.git/config`, so it applies there only; git uses
+the longest matching rule, so your own repos keep the global one. Add
+`fallback: none` to the project's `GITHUB_TOKEN` entry in `secrets.yaml` so
+its apps never get your default token either.
+
+A repo where your own account is a collaborator (owned by another user) uses
+your token; add a global rule for that owner too. A fine-grained token only
+reaches repos of its owner (you or your organizations), so such a repo needs
+a token that can reach it.
 
 ### Root commands (your own terminal, never inside an agent session)
 

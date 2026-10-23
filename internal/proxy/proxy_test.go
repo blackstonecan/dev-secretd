@@ -227,6 +227,17 @@ func TestBasicUsernameFromPublicValue(t *testing.T) {
 	}
 }
 
+// Plain --basic needs no public value: the username is DefaultBasicUser.
+func TestBasicDefaultUsername(t *testing.T) {
+	api := newRecorder(t, func(*http.Request) string { return "ok" })
+	git := newRecorder(t, func(*http.Request) string { return "ok" })
+	p, _ := multiHost(t, store.Binding{Header: "Authorization", BasicAuth: true}, api, git)
+	get(t, p.URL+"/user/GITHUB_TOKEN/"+git.host()+"/o/r.git/info/refs", nil)
+	if git.auth != basicOf(store.DefaultBasicUser, "tok-123") {
+		t.Fatalf("default username: %q", git.auth)
+	}
+}
+
 func TestBasicUsernameMissing(t *testing.T) {
 	api := newRecorder(t, func(*http.Request) string { return "ok" })
 	git := newRecorder(t, func(*http.Request) string { return "ok" })

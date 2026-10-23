@@ -157,36 +157,36 @@ bound host to reach it (`/user/GITHUB_TOKEN/github.com/...`). Use the project's 
 about that project (`/<project>/GITHUB_TOKEN/...`), and only read-only calls
 unless the user asked for a change.
 
-## `git push` through secretd
+## `git push` and `git pull` through secretd
 
-A secret can be bound to several hosts (`secret list` shows them,
-comma-separated). When `github.com` is one of them, with `basic user=NAME`,
-git pushes through the proxy: the first path segment picks the host, and the
-username is the public value NAME (the secret's project first, then the
-user's; `secret get NAME` shows it).
+The user's own GitHub repos go through secretd by a global git rule, so
+plain `git push` / `git pull` work with no credentials and no prompt:
 
 ```bash
-git remote get-url --push origin     # already set up if it starts with http://127.0.0.1:7777/
-git remote set-url --push origin http://127.0.0.1:7777/user/GITHUB_TOKEN/github.com/OWNER/REPO.git
-git push
+git config --global --get-regexp '^url\..*insteadof'   # http://127.0.0.1:7777/user/GITHUB_TOKEN/github.com/<owner>/ -> https://github.com/<owner>/
+git remote get-url --push origin                       # shows the rewritten URL when a rule applies
 ```
 
-A private repo needs the proxy for fetch and pull too: set the fetch URL the
-same way (`git remote set-url origin <proxy URL>`).
+How it works: the rule rewrites `https://github.com/<owner>/...` to the proxy,
+which adds the token (bound to `github.com` with `basic` auth; the username
+does not matter to GitHub). The URL is plumbing: never write it into a
+remote by hand when a rule covers the repo.
 
-- Set a push URL only for the user's own repos, with the user's secret. A repo
-  of another account (a client, a teammate) uses its project's secret
-  (`/<project>/GITHUB_TOKEN/github.com/...`); if that does not exist, stop and
-  ask.
+- **Another account's repo** (a client, a teammate) never uses the user's
+  token. It needs its own project secret and a rule in that repo only:
+  `git config url."http://127.0.0.1:7777/<project>/GITHUB_TOKEN/github.com/".insteadOf "https://github.com/"`
+  (local config; the longest matching rule wins). If the project has no
+  `GITHUB_TOKEN`, stop and ask the user to add it with
+  `secret set GITHUB_TOKEN --host api.github.com,github.com --header Authorization --basic`
+  in that project. Never add a global rule for an owner the user did not ask
+  for.
+- If a push asks for a username or password, no rule covers the repo: stop
+  and ask; do not type credentials.
 - If no secret is bound to `github.com`, the user binds one in their own
-  terminal: `/usr/bin/sudo secret bind user/GITHUB_TOKEN --host api.github.com,github.com --header Authorization --basic GITHUB_USERNAME`
-  (with `secret set GITHUB_USERNAME <name> --user --public` first).
-- A push for a client repo that fails with `basic username GITHUB_USERNAME`
-  needs that project's username: ask the user, then
-  `secret set GITHUB_USERNAME <name> --project <project> --public`.
-- `gh` cannot use the proxy. For anything a push URL cannot do, ask the user.
-  Never read token files, `~/.git-credentials`, keyrings or `gh auth token`,
-  and never ask for the token in the chat.
+  terminal: `/usr/bin/sudo secret bind user/GITHUB_TOKEN --host api.github.com,github.com --header Authorization --basic`.
+- `gh` cannot use the proxy. For anything git cannot do, ask the user. Never
+  read token files, `~/.git-credentials`, keyrings or `gh auth token`, and
+  never ask for the token in the chat.
 
 ## A project with secrets in plain `.env`
 

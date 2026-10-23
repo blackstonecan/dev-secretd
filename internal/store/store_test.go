@@ -173,6 +173,26 @@ func TestPublicValues(t *testing.T) {
 	}
 }
 
+func TestBasicAuthForms(t *testing.T) {
+	plain := &Binding{Host: "github.com", Header: "Authorization", BasicAuth: true}
+	named := &Binding{Host: "github.com", Header: "Authorization", BasicAuth: true, Basic: "GITHUB_USERNAME"}
+	// Bindings stored with only "basic" (a value name) still mean Basic auth.
+	var old Binding
+	if err := json.Unmarshal([]byte(`{"host":"github.com","header":"Authorization","basic":"GITHUB_USERNAME"}`), &old); err != nil {
+		t.Fatal(err)
+	}
+	for name, b := range map[string]*Binding{"plain": plain, "named": named, "old": &old} {
+		sec := Secret{Project: "user", Name: "GITHUB_TOKEN", Tier: TierProxy, Value: "tok", Binding: b}
+		if err := sec.Validate(); err != nil || !b.UsesBasic() {
+			t.Fatalf("%s: %v (basic %v)", name, err, b.UsesBasic())
+		}
+	}
+	noHeader := Secret{Project: "user", Name: "T", Tier: TierProxy, Value: "tok", Binding: &Binding{Host: "h.com", Query: "k", BasicAuth: true}}
+	if err := noHeader.Validate(); err == nil {
+		t.Fatal("--basic without --header accepted")
+	}
+}
+
 // A secret stored before extra hosts existed still reads and works.
 func TestLegacyBinding(t *testing.T) {
 	var b Binding

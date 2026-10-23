@@ -67,13 +67,13 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	b := sec.Binding
-	// Basic auth takes its username from a public value: the secret's
-	// project first, then the user scope.
-	username := ""
+	// Basic auth uses DefaultBasicUser, or the public value the binding names:
+	// the secret's project first, then the user scope.
+	username := store.DefaultBasicUser
 	if b.Basic != "" {
 		u, err := p.Store.ResolvePublic(sec.Project, b.Basic)
 		if err != nil {
-			fail(http.StatusInternalServerError, fmt.Sprintf("basic username %s: %v (set it with `secret set %s NAME --public`)", b.Basic, err, b.Basic))
+			fail(http.StatusInternalServerError, fmt.Sprintf("basic username %s: %v (set it with `secret set %s VALUE --public`)", b.Basic, err, b.Basic))
 			return
 		}
 		username = u.Value

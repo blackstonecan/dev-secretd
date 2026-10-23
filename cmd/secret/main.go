@@ -33,8 +33,10 @@ User commands:
                        /P/NAME/<path> goes to the first, /P/NAME/H2/<path> to H2
       --header X       proxy tier: header name, for example x-api-key
       --format F       proxy tier: header template, for example "Bearer {}"
-      --basic NAME     proxy tier: header value "Basic base64(USER:secret)", USER is the
-                       public value NAME (git over HTTPS needs it)
+      --basic          proxy tier: header value "Basic base64(x-access-token:secret)"
+                       (git over HTTPS needs it; GitHub ignores the username)
+      --basic-user N   like --basic, with the username from public value N
+                       (for services that check it)
       --query Q        proxy tier: query parameter, instead of a header
   secret get NAME [--project P | --user]  print a public value (the project's, else the user's)
   secret list [--project P | --all]       names and rules; values of public entries only
@@ -50,7 +52,7 @@ Root commands (run with: /usr/bin/sudo secret ...):
   reveal P/NAME        print a value (run it in your own terminal, not in an agent)
   rotate P/NAME        replace a value
   rm P/NAME            delete a secret
-  bind P/NAME [--host H[,H2] --header X [--format F | --basic NAME] | --query Q | --run [--file]]
+  bind P/NAME [--host H[,H2] --header X [--format F | --basic [--basic-user N]] | --query Q | --run [--file]]
                        change the tier or the binding (private and public never convert)
   bind user/NAME --default | --no-default
                        make a user-scope secret a default for all projects, or not

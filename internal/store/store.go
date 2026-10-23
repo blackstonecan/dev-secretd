@@ -58,13 +58,20 @@ type Binding struct {
 	ExtraHosts []string `json:"extra_hosts,omitempty"`
 	Header     string   `json:"header,omitempty"` // header name, for example x-api-key
 	Format     string   `json:"format,omitempty"` // header value template, "{}" is the secret; default "{}"
-	// Basic auth: the name of a public value that holds the username, looked
-	// up in the secret's project and then the user scope at each request. The
-	// header value is "Basic base64(<username>:<secret>)". Instead of Format;
-	// git over HTTPS needs it.
+	// BasicAuth: the header value is "Basic base64(<username>:<secret>)",
+	// instead of Format; git over HTTPS needs it. The username is
+	// DefaultBasicUser unless Basic names a public value that holds one.
+	BasicAuth bool `json:"basic_auth,omitempty"`
+	// Basic (optional) names a public value with the username, for services
+	// that check it (GitHub does not). It is looked up in the secret's project
+	// and then the user scope at each request.
 	Basic string `json:"basic,omitempty"`
 	Query string `json:"query,omitempty"` // query parameter name, instead of a header
 }
+
+// DefaultBasicUser is the Basic auth username when a binding names none.
+// GitHub takes the account from the token and ignores the username.
+const DefaultBasicUser = "x-access-token"
 
 // MaxHosts is the most hosts one binding may have.
 const MaxHosts = 8
@@ -72,10 +79,13 @@ const MaxHosts = 8
 // Hosts returns the default host and then the extra hosts.
 func (b *Binding) Hosts() []string { return append([]string{b.Host}, b.ExtraHosts...) }
 
+// UsesBasic says whether the header carries Basic auth.
+func (b *Binding) UsesBasic() bool { return b.BasicAuth || b.Basic != "" }
+
 // HeaderValue is the header value that carries the secret. username is the
-// resolved public value named by Basic (unused without Basic).
+// Basic auth username (unused without Basic auth).
 func (b *Binding) HeaderValue(value, username string) string {
-	if b.Basic != "" {
+	if b.UsesBasic() {
 		return "Basic " + base64.StdEncoding.EncodeToString([]byte(username+":"+value))
 	}
 	format := b.Format
@@ -175,12 +185,12 @@ func (s *Secret) Validate() error {
 			}
 			seen[strings.ToLower(h)] = true
 		}
-		if b.Basic != "" {
+		if b.UsesBasic() {
 			if b.Header == "" || b.Format != "" {
 				return errors.New("--basic needs --header and no --format")
 			}
-			if !ValidName(b.Basic) {
-				return fmt.Errorf("--basic names a public value (UPPER_SNAKE_CASE), got %q", b.Basic)
+			if b.Basic != "" && !ValidName(b.Basic) {
+				return fmt.Errorf("--basic-user names a public value (UPPER_SNAKE_CASE), got %q", b.Basic)
 			}
 		}
 		if (b.Header == "") == (b.Query == "") {

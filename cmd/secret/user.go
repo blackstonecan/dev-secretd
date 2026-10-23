@@ -91,7 +91,8 @@ func cmdSet(args []string) error {
 	host := fs.String("host", "", "")
 	header := fs.String("header", "", "")
 	format := fs.String("format", "", "")
-	basic := fs.String("basic", "", "")
+	basic := fs.Bool("basic", false, "")
+	basicUser := fs.String("basic-user", "", "")
 	query := fs.String("query", "", "")
 	public := fs.Bool("public", false, "")
 	name, rest := firstArg(args)
@@ -120,7 +121,7 @@ func cmdSet(args []string) error {
 		return err
 	}
 	if *public {
-		if *def || *isFile || *host != "" || *header != "" || *format != "" || *basic != "" || *query != "" {
+		if *def || *isFile || *host != "" || *header != "" || *format != "" || *basic || *basicUser != "" || *query != "" {
 			return usageError{"a public value takes only a value, --project and --user"}
 		}
 		return setPublic(p, name, given)
@@ -133,8 +134,8 @@ func cmdSet(args []string) error {
 		}
 		h, extra := store.ParseHosts(*host)
 		req.Tier, req.Kind = store.TierProxy, ""
-		req.Binding = &store.Binding{Host: h, ExtraHosts: extra, Header: *header, Format: *format, Basic: *basic, Query: *query}
-	} else if *basic != "" {
+		req.Binding = &store.Binding{Host: h, ExtraHosts: extra, Header: *header, Format: *format, BasicAuth: *basic || *basicUser != "", Basic: *basicUser, Query: *query}
+	} else if *basic || *basicUser != "" {
 		return usageError{"--basic is for proxy-tier secrets: add --host and --header"}
 	} else if *isFile {
 		req.Kind = store.KindFile
@@ -348,6 +349,8 @@ func cmdList(args []string) error {
 			switch {
 			case b.Basic != "":
 				use = hosts + " header " + b.Header + " basic user=" + b.Basic
+			case b.BasicAuth:
+				use = hosts + " header " + b.Header + " basic"
 			case b.Header != "":
 				use = hosts + " header " + b.Header
 			default:
