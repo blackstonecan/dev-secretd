@@ -12,8 +12,10 @@ secret="$work/bin/secret"
 mkdir -p "$work/state" "$work/project" "$work/tier" "$work/app"
 port=$(( 20000 + RANDOM % 20000 ))
 openssl rand -hex 32 > "$work/master.key"
-printf '{"socket": "%s", "proxy_addr": "127.0.0.1:%s", "state_dir": "%s", "master_cred": "%s", "allow_uid": %s}\n' \
+printf '{"socket": "%s", "proxy_addr": "127.0.0.1:%s", "state_dir": "%s", "master_cred": "%s", "allow_uid": %s, "basic_user": "e2e-user"}\n' \
   "$work/api.sock" "$port" "$work/state" "$work/unused.cred" "$(id -u)" > "$work/config.json"
+# The same daemon, seen through a config without a default --basic username.
+sed 's/, "basic_user": "e2e-user"//' "$work/config.json" > "$work/config-nobasic.json"
 export SECRETD_CONFIG="$work/config.json"
 
 "$work/bin/secretd" --config "$work/config.json" --master-key-file "$work/master.key" 2>"$work/daemon.log" &
@@ -132,9 +134,19 @@ check "client adds its own"        "stored client/GH_DEFAULT" "$(printf 'ghd-cli
 check "client uses its own"        "ghd-client"          "$("$secret" run -- sh -c 'echo "$GH_DEFAULT"')"
 check "bind --default needs root"  "needs root"          "$("$secret" bind user/GH_DEFAULT --no-default 2>&1 || true)"
 
+# --- several hosts, Basic auth ---
+cd "$work/project"
+check "set: hosts + --basic"    "stored demo/GIT_TOKEN"   "$(printf 'git-tok' | "$secret" set GIT_TOKEN --host api.example.com,git.example.com --header Authorization --basic)"
+check "list: hosts and basic"   "api.example.com,git.example.com header Authorization basic e2e-user" "$("$secret" list | grep demo/GIT_TOKEN)"
+check "set: --basic-user"       "basic other-user"        "$(printf 'git-tok2' | "$secret" set GIT_TOKEN2 --host git.example.com --header Authorization --basic-user other-user >/dev/null && "$secret" list | grep demo/GIT_TOKEN2)"
+check "basic needs a default"   "no default username"     "$(printf 'x' | SECRETD_CONFIG="$work/config-nobasic.json" "$secret" set GIT_TOKEN3 --host git.example.com --header Authorization --basic 2>&1 || true)"
+check "basic needs proxy tier"  "for proxy-tier secrets"  "$(printf 'x' | "$secret" set GIT_TOKEN4 --basic 2>&1 || true)"
+check "basic and format refused" "--basic needs --header and no --format" "$(printf 'x' | "$secret" set GIT_TOKEN5 --host a.example.com --header Authorization --format 'Bearer {}' --basic 2>&1 || true)"
+check "duplicate host refused"  "listed twice"            "$(printf 'x' | "$secret" set GIT_TOKEN6 --host a.example.com,A.example.com --header x 2>&1 || true)"
+
 # --- root and audit ---
 check "root commands need sudo" "needs root" "$("$secret" reveal demo/DB_PASSWORD 2>&1 || true)"
-if grep -q 'pw-123\|sk-fake\|sk_test_abc\|npm-user\|gh-user\|npm-fb\|ghd-user\|ghd-client' "$work/state/audit.log"; then fail "audit log has a value"; else ok "audit log has no values"; fi
+if grep -q 'pw-123\|sk-fake\|sk_test_abc\|npm-user\|gh-user\|npm-fb\|ghd-user\|ghd-client\|git-tok' "$work/state/audit.log"; then fail "audit log has a value"; else ok "audit log has no values"; fi
 check "audit: fallback recorded" '"detail":"run from user"' "$(cat "$work/state/audit.log")"
 check "audit log written" '"op":"resolve"' "$(cat "$work/state/audit.log")"
 if grep -aq 'pw-123\|sk-fake' "$work/state/store.enc"; then fail "store file has plaintext"; else ok "store file is encrypted"; fi

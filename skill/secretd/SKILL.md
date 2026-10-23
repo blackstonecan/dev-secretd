@@ -133,19 +133,33 @@ curl -s -H 'Authorization: placeholder' http://127.0.0.1:7777/user/GITHUB_TOKEN/
 curl -s -H 'Authorization: placeholder' http://127.0.0.1:7777/user/GITHUB_TOKEN/repos/OWNER/REPO/issues
 ```
 
-The path after `/<project>/<NAME>` goes to the bound host (here
-`https://api.github.com/...`). Use the project's own secret when the task is
+The path after `/<project>/<NAME>` goes to the first bound host (here
+`https://api.github.com/...`); with several hosts, start the path with another
+bound host to reach it (`/user/GITHUB_TOKEN/github.com/...`). Use the project's own secret when the task is
 about that project (`/<project>/GITHUB_TOKEN/...`), and only read-only calls
 unless the user asked for a change.
 
-## `git push`, `gh` and other non-API clients
+## `git push` through secretd
 
-The proxy covers only the bound API host (`api.github.com`). `git push`/`pull`
-over HTTPS and `gh` authenticate to `github.com` themselves, so secretd cannot
-serve them. When a push needs credentials and none are configured, stop and
-ask the user to push in their own terminal (or to run `gh auth login`). Do not
-read token files, `~/.git-credentials`, keyrings or `gh auth token`, and do
-not ask for the token in the chat.
+A secret can be bound to several hosts (`secret list` shows them,
+comma-separated). When `github.com` is one of them, with `basic` auth, git
+pushes through the proxy: the first path segment picks the host.
+
+```bash
+git remote get-url --push origin     # already set up if it starts with http://127.0.0.1:7777/
+git remote set-url --push origin http://127.0.0.1:7777/user/GITHUB_TOKEN/github.com/OWNER/REPO.git
+git push
+```
+
+- Set a push URL only for the user's own repos, with the user's secret. A repo
+  of another account (a client, a teammate) uses its project's secret
+  (`/<project>/GITHUB_TOKEN/github.com/...`); if that does not exist, stop and
+  ask.
+- If no secret is bound to `github.com`, the user binds one in their own
+  terminal: `/usr/bin/sudo secret bind user/GITHUB_TOKEN --host api.github.com,github.com --header Authorization --basic`.
+- `gh` cannot use the proxy. For anything a push URL cannot do, ask the user.
+  Never read token files, `~/.git-credentials`, keyrings or `gh auth token`,
+  and never ask for the token in the chat.
 
 ## A project with secrets in plain `.env`
 

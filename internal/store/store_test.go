@@ -2,6 +2,7 @@ package store
 
 import (
 	"bytes"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -98,6 +99,43 @@ func TestSetDefault(t *testing.T) {
 	}
 }
 
+func TestBindingHostsAndHeader(t *testing.T) {
+	h, extra := ParseHosts(" api.github.com, github.com ,")
+	b := &Binding{Host: h, ExtraHosts: extra, Header: "Authorization", Basic: "blackstonecan"}
+	if got := b.Hosts(); len(got) != 2 || got[0] != "api.github.com" || got[1] != "github.com" {
+		t.Fatalf("hosts: %q", got)
+	}
+	sec := Secret{Project: "user", Name: "GITHUB_TOKEN", Tier: TierProxy, Value: "tok", Binding: b}
+	if err := sec.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	// base64("blackstonecan:tok")
+	if got := b.HeaderValue("tok"); got != "Basic YmxhY2tzdG9uZWNhbjp0b2s=" {
+		t.Fatalf("basic header: %q", got)
+	}
+	if got := (&Binding{Header: "x", Format: "Bearer {}"}).HeaderValue("tok"); got != "Bearer tok" {
+		t.Fatalf("format header: %q", got)
+	}
+	if got := (&Binding{Header: "x"}).HeaderValue("tok"); got != "tok" {
+		t.Fatalf("plain header: %q", got)
+	}
+}
+
+// A secret stored before extra hosts existed still reads and works.
+func TestLegacyBinding(t *testing.T) {
+	var b Binding
+	if err := json.Unmarshal([]byte(`{"host":"api.example.com","header":"x-api-key"}`), &b); err != nil {
+		t.Fatal(err)
+	}
+	if got := b.Hosts(); len(got) != 1 || got[0] != "api.example.com" || b.HeaderValue("v") != "v" {
+		t.Fatalf("legacy binding: %+v", b)
+	}
+	raw, _ := json.Marshal(Binding{Host: "api.example.com", Header: "x-api-key"})
+	if string(raw) != `{"host":"api.example.com","header":"x-api-key"}` {
+		t.Fatalf("a one-host binding must keep the old format: %s", raw)
+	}
+}
+
 func TestFileIsEncrypted(t *testing.T) {
 	s, dir := newStore(t)
 	if err := s.Create(runSecret("TOKEN", "super-secret-value"), time.Now()); err != nil {
@@ -129,6 +167,12 @@ func TestValidate(t *testing.T) {
 		"format without {}": {Project: "demo", Name: "A", Tier: TierProxy, Value: "v", Binding: &Binding{Host: "h.com", Header: "x", Format: "Bearer"}},
 		"unknown tier":      {Project: "demo", Name: "A", Tier: "plain", Value: "v"},
 		"project default":   {Project: "demo", Name: "A", Tier: TierRun, Kind: KindEnv, Value: "v", Default: true},
+		"bad extra host":    {Project: "demo", Name: "A", Tier: TierProxy, Value: "v", Binding: &Binding{Host: "h.com", ExtraHosts: []string{"x.com/evil"}, Header: "x"}},
+		"host twice":        {Project: "demo", Name: "A", Tier: TierProxy, Value: "v", Binding: &Binding{Host: "h.com", ExtraHosts: []string{"H.com"}, Header: "x"}},
+		"too many hosts":    {Project: "demo", Name: "A", Tier: TierProxy, Value: "v", Binding: &Binding{Host: "h.com", ExtraHosts: []string{"a.com", "b.com", "c.com", "d.com", "e.com", "f.com", "g.com", "i.com"}, Header: "x"}},
+		"basic and format":  {Project: "demo", Name: "A", Tier: TierProxy, Value: "v", Binding: &Binding{Host: "h.com", Header: "x", Format: "Bearer {}", Basic: "me"}},
+		"basic with query":  {Project: "demo", Name: "A", Tier: TierProxy, Value: "v", Binding: &Binding{Host: "h.com", Query: "k", Basic: "me"}},
+		"basic with colon":  {Project: "demo", Name: "A", Tier: TierProxy, Value: "v", Binding: &Binding{Host: "h.com", Header: "x", Basic: "me:x"}},
 	}
 	for name, sec := range cases {
 		if err := sec.Validate(); err == nil {

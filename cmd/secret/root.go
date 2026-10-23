@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/blackstonecan/dev-secretd/internal/config"
@@ -45,7 +46,7 @@ func rootCommand(cmd string, args []string) error {
 	case "rm":
 		return rootRm(s, audit, who, args)
 	case "bind":
-		return rootBind(s, audit, who, args)
+		return rootBind(s, audit, who, args, cfg.BasicUser)
 	case "export":
 		return rootExport(s, audit, who, args)
 	}
@@ -110,12 +111,14 @@ func rootRm(s *store.Store, audit *state.Audit, who string, args []string) error
 	return nil
 }
 
-func rootBind(s *store.Store, audit *state.Audit, who string, args []string) error {
+func rootBind(s *store.Store, audit *state.Audit, who string, args []string, defaultBasic string) error {
 	key, rest := firstArg(args)
 	fs := flag.NewFlagSet("bind", flag.ContinueOnError)
 	host := fs.String("host", "", "")
 	header := fs.String("header", "", "")
 	format := fs.String("format", "", "")
+	basic := fs.Bool("basic", false, "")
+	basicName := fs.String("basic-user", "", "")
 	query := fs.String("query", "", "")
 	run := fs.Bool("run", false, "")
 	isFile := fs.Bool("file", false, "")
@@ -129,7 +132,7 @@ func rootBind(s *store.Store, audit *state.Audit, who string, args []string) err
 		return err
 	}
 	if *def || *noDef {
-		if *def && *noDef || *run || *isFile || *host != "" || *header != "" || *format != "" || *query != "" {
+		if *def && *noDef || *run || *isFile || *host != "" || *header != "" || *format != "" || *query != "" || *basic || *basicName != "" {
 			return usageError{"use --default or --no-default alone"}
 		}
 		err = s.SetDefault(p, n, *def, time.Now())
@@ -152,12 +155,20 @@ func rootBind(s *store.Store, audit *state.Audit, who string, args []string) err
 			kind = store.KindFile
 		}
 	} else {
-		b = &store.Binding{Host: *host, Header: *header, Format: *format, Query: *query}
+		user, err := basicUser(*basic, *basicName, defaultBasic)
+		if err != nil {
+			return err
+		}
+		h, extra := store.ParseHosts(*host)
+		b = &store.Binding{Host: h, ExtraHosts: extra, Header: *header, Format: *format, Basic: user, Query: *query}
 	}
 	err = s.Rebind(p, n, tier, kind, b, time.Now())
 	detail := string(tier)
 	if b != nil {
-		detail += " " + b.Host
+		detail += " " + strings.Join(b.Hosts(), ",")
+		if b.Basic != "" {
+			detail += " basic " + b.Basic
+		}
 	}
 	audit.Log(state.Event{Op: "bind", Project: p, Name: n, Caller: who, Detail: detail, Error: errString(err)})
 	if err != nil {

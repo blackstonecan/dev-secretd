@@ -91,6 +91,8 @@ func cmdSet(args []string) error {
 	host := fs.String("host", "", "")
 	header := fs.String("header", "", "")
 	format := fs.String("format", "", "")
+	basic := fs.Bool("basic", false, "")
+	basicName := fs.String("basic-user", "", "")
 	query := fs.String("query", "", "")
 	name, rest := firstArg(args)
 	if err := fs.Parse(rest); err != nil {
@@ -118,8 +120,23 @@ func cmdSet(args []string) error {
 		if *isFile {
 			return usageError{"--file is for run-tier secrets only"}
 		}
+		def := ""
+		if *basic && *basicName == "" {
+			cfg, err := config.Load()
+			if err != nil {
+				return err
+			}
+			def = cfg.BasicUser
+		}
+		user, err := basicUser(*basic, *basicName, def)
+		if err != nil {
+			return err
+		}
+		h, extra := store.ParseHosts(*host)
 		req.Tier, req.Kind = store.TierProxy, ""
-		req.Binding = &store.Binding{Host: *host, Header: *header, Format: *format, Query: *query}
+		req.Binding = &store.Binding{Host: h, ExtraHosts: extra, Header: *header, Format: *format, Basic: user, Query: *query}
+	} else if *basic || *basicName != "" {
+		return usageError{"--basic is for proxy-tier secrets: add --host and --header"}
 	} else if *isFile {
 		req.Kind = store.KindFile
 	}
@@ -257,11 +274,15 @@ func cmdList(args []string) error {
 	fmt.Fprintln(w, "SECRET\tTIER\tUSE\tLOCKED\tUPDATED\tNOTE")
 	for _, s := range list {
 		use := string(s.Kind)
-		if s.Binding != nil {
-			if s.Binding.Header != "" {
-				use = s.Binding.Host + " header " + s.Binding.Header
-			} else {
-				use = s.Binding.Host + " query " + s.Binding.Query
+		if b := s.Binding; b != nil {
+			hosts := strings.Join(b.Hosts(), ",")
+			switch {
+			case b.Basic != "":
+				use = hosts + " header " + b.Header + " basic " + b.Basic
+			case b.Header != "":
+				use = hosts + " header " + b.Header
+			default:
+				use = hosts + " query " + b.Query
 			}
 		}
 		note := ""

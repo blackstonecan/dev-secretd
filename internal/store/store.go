@@ -10,6 +10,7 @@ import (
 	"crypto/aes"
 	"crypto/cipher"
 	"crypto/rand"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -17,6 +18,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"sort"
+	"strings"
 	"syscall"
 	"time"
 )
@@ -43,10 +45,48 @@ const (
 
 // Binding says where and how the proxy adds a proxy-tier secret.
 type Binding struct {
-	Host   string `json:"host"`             // upstream host, always HTTPS
-	Header string `json:"header,omitempty"` // header name, for example x-api-key
-	Format string `json:"format,omitempty"` // header value template, "{}" is the secret; default "{}"
-	Query  string `json:"query,omitempty"`  // query parameter name, instead of a header
+	Host string `json:"host"` // upstream host, always HTTPS; the default host
+	// More hosts the secret may go to. A proxy URL picks one with its first
+	// path segment: /<project>/<NAME>/<host>/<path>.
+	ExtraHosts []string `json:"extra_hosts,omitempty"`
+	Header     string   `json:"header,omitempty"` // header name, for example x-api-key
+	Format     string   `json:"format,omitempty"` // header value template, "{}" is the secret; default "{}"
+	// Basic auth username: the header value is "Basic base64(<Basic>:<secret>)".
+	// Instead of Format; git over HTTPS needs it.
+	Basic string `json:"basic,omitempty"`
+	Query string `json:"query,omitempty"` // query parameter name, instead of a header
+}
+
+// MaxHosts is the most hosts one binding may have.
+const MaxHosts = 8
+
+// Hosts returns the default host and then the extra hosts.
+func (b *Binding) Hosts() []string { return append([]string{b.Host}, b.ExtraHosts...) }
+
+// HeaderValue is the header value that carries the secret.
+func (b *Binding) HeaderValue(value string) string {
+	if b.Basic != "" {
+		return "Basic " + base64.StdEncoding.EncodeToString([]byte(b.Basic+":"+value))
+	}
+	format := b.Format
+	if format == "" {
+		format = "{}"
+	}
+	return strings.Replace(format, "{}", value, 1)
+}
+
+// ParseHosts splits a --host list: "a.com,b.com" becomes a.com with b.com extra.
+func ParseHosts(list string) (string, []string) {
+	var hosts []string
+	for _, h := range strings.Split(list, ",") {
+		if h = strings.TrimSpace(h); h != "" {
+			hosts = append(hosts, h)
+		}
+	}
+	if len(hosts) == 0 {
+		return "", nil
+	}
+	return hosts[0], hosts[1:]
 }
 
 type Secret struct {
@@ -73,6 +113,7 @@ var (
 	hostRe    = regexp.MustCompile(`^[a-zA-Z0-9.-]+(:[0-9]{1,5})?$`)
 	headerRe  = regexp.MustCompile(`^[A-Za-z0-9-]{1,64}$`)
 	queryRe   = regexp.MustCompile(`^[A-Za-z0-9_.-]{1,64}$`)
+	basicRe   = regexp.MustCompile(`^[A-Za-z0-9._-]{1,64}$`)
 )
 
 // UserProject is the user scope: secrets that any project may fall back to
@@ -110,6 +151,28 @@ func (s *Secret) Validate() error {
 		b := s.Binding
 		if b == nil || !hostRe.MatchString(b.Host) {
 			return errors.New("a proxy-tier secret needs a valid --host")
+		}
+		hosts := b.Hosts()
+		if len(hosts) > MaxHosts {
+			return fmt.Errorf("at most %d hosts", MaxHosts)
+		}
+		seen := map[string]bool{}
+		for _, h := range hosts {
+			if !hostRe.MatchString(h) {
+				return fmt.Errorf("invalid host %q", h)
+			}
+			if seen[strings.ToLower(h)] {
+				return fmt.Errorf("host %q is listed twice", h)
+			}
+			seen[strings.ToLower(h)] = true
+		}
+		if b.Basic != "" {
+			if b.Header == "" || b.Format != "" {
+				return errors.New("--basic needs --header and no --format")
+			}
+			if !basicRe.MatchString(b.Basic) {
+				return fmt.Errorf("invalid --basic username %q", b.Basic)
+			}
 		}
 		if (b.Header == "") == (b.Query == "") {
 			return errors.New("a proxy-tier secret needs exactly one of --header or --query")

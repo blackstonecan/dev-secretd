@@ -67,12 +67,21 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	b := sec.Binding
+	host, rest := pickHost(b, rest)
 	scheme := p.Scheme
 	if scheme == "" {
 		scheme = "https"
 	}
-	target := &url.URL{Scheme: scheme, Host: b.Host}
+	target := &url.URL{Scheme: scheme, Host: host}
 	status := 0
+	// The header value can hold the secret in another form (Basic auth is
+	// base64); mask that too.
+	masks := []string{sec.Value}
+	if b.Header != "" {
+		if hv := b.HeaderValue(sec.Value); !strings.Contains(hv, sec.Value) {
+			masks = append(masks, strings.TrimPrefix(hv, "Basic "))
+		}
+	}
 
 	rp := &httputil.ReverseProxy{
 		Transport: p.Transport,
@@ -93,11 +102,7 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			pr.Out.Header.Del("Proxy-Authorization")
 			if b.Header != "" {
 				pr.Out.Header.Del(b.Header)
-				format := b.Format
-				if format == "" {
-					format = "{}"
-				}
-				pr.Out.Header.Set(b.Header, strings.Replace(format, "{}", sec.Value, 1))
+				pr.Out.Header.Set(b.Header, b.HeaderValue(sec.Value))
 			} else {
 				q := pr.Out.URL.Query()
 				q.Set(b.Query, sec.Value)
@@ -108,16 +113,16 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			status = resp.StatusCode
 			for k, vs := range resp.Header {
 				for i, v := range vs {
-					resp.Header[k][i] = redact.String(v, sec.Value)
+					resp.Header[k][i] = redact.String(v, masks...)
 				}
 			}
-			resp.Body = &redactBody{rc: resp.Body, value: sec.Value}
+			resp.Body = &redactBody{rc: resp.Body, values: masks}
 			resp.Header.Del("Content-Length")
 			resp.ContentLength = -1
 			return nil
 		},
 		ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
-			ev.Error = redact.String(err.Error(), sec.Value)
+			ev.Error = redact.String(err.Error(), masks...)
 			http.Error(w, "secretd: upstream error", http.StatusBadGateway)
 		},
 		// Stream responses (SSE) at once.
@@ -126,8 +131,26 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	rp.ServeHTTP(w, r)
 
 	// The path only: a query parameter can hold the secret.
-	ev.Detail = fmt.Sprintf("%s %s %s %d", r.Method, b.Host, redact.String(rest, sec.Value), status)
+	ev.Detail = fmt.Sprintf("%s %s %s %d", r.Method, host, redact.String(rest, masks...), status)
 	p.Audit.Log(ev)
+}
+
+// pickHost returns the upstream host and the path to send there. When the
+// first path segment is exactly one of the bound hosts, it picks that host
+// and is removed; otherwise the default host gets the whole path. Host names
+// have dots and must match a binding, so an API path is never taken for one,
+// and a host that is not bound can never be reached.
+func pickHost(b *store.Binding, rest string) (string, string) {
+	seg, after, _ := strings.Cut(strings.TrimPrefix(rest, "/"), "/")
+	for _, h := range b.ExtraHosts {
+		if strings.EqualFold(seg, h) {
+			return h, "/" + after
+		}
+	}
+	if strings.EqualFold(seg, b.Host) && len(b.ExtraHosts) > 0 {
+		return b.Host, "/" + after
+	}
+	return b.Host, rest
 }
 
 // splitPath turns "/proj/NAME/v1/x" into ("proj", "NAME", "/v1/x").
@@ -147,17 +170,17 @@ func splitPath(p string) (project, name, rest string, ok bool) {
 // still masked, because redact.Writer holds back a short tail (at most
 // len(value)-1 bytes, so streamed events can arrive a little later).
 type redactBody struct {
-	rc    io.ReadCloser
-	value string
-	out   bytes.Buffer
-	w     *redact.Writer
-	tmp   []byte
-	eof   bool
+	rc     io.ReadCloser
+	values []string
+	out    bytes.Buffer
+	w      *redact.Writer
+	tmp    []byte
+	eof    bool
 }
 
 func (r *redactBody) Read(p []byte) (int, error) {
 	if r.w == nil {
-		r.w = redact.NewWriter(&r.out, r.value)
+		r.w = redact.NewWriter(&r.out, r.values...)
 		r.tmp = make([]byte, 32*1024)
 	}
 	for r.out.Len() == 0 {

@@ -27,9 +27,13 @@ User commands:
       --default        with --user: every project that lists the name gets
                        it (unless it has its own or says "fallback: none")
       --file           run-tier file secret (the env var holds a temp file path)
-      --host H         proxy tier: upstream host (HTTPS)
+      --host H[,H2]    proxy tier: upstream host (HTTPS); more hosts, comma-separated:
+                       /P/NAME/<path> goes to the first, /P/NAME/H2/<path> to H2
       --header X       proxy tier: header name, for example x-api-key
       --format F       proxy tier: header template, for example "Bearer {}"
+      --basic          proxy tier: header value "Basic base64(USER:secret)", USER from
+                       basic_user in /etc/secretd/config.json (git over HTTPS needs it)
+      --basic-user U   like --basic, with username U
       --query Q        proxy tier: query parameter, instead of a header
   secret list [--project P | --all]       names and rules, never values
   secret run [--project P] -- CMD...      run CMD with the secrets of secrets.yaml
@@ -44,7 +48,7 @@ Root commands (run with: /usr/bin/sudo secret ...):
   reveal P/NAME        print a value (run it in your own terminal, not in an agent)
   rotate P/NAME        replace a value
   rm P/NAME            delete a secret
-  bind P/NAME [--host H --header X --format F | --query Q | --run [--file]]
+  bind P/NAME [--host H[,H2] --header X [--format F | --basic | --basic-user U] | --query Q | --run [--file]]
                        change the tier or the binding
   bind user/NAME --default | --no-default
                        make a user-scope secret a default for all projects, or not
@@ -98,6 +102,21 @@ func main() {
 type usageError struct{ msg string }
 
 func (e usageError) Error() string { return e.msg }
+
+// basicUser is the Basic auth username of a binding: --basic-user NAME, or
+// with --basic the default from the config. Empty: no Basic auth.
+func basicUser(basic bool, name, def string) (string, error) {
+	switch {
+	case name != "":
+		return name, nil
+	case !basic:
+		return "", nil
+	case def == "":
+		return "", usageError{"--basic has no default username: use --basic-user NAME, or set one with " +
+			"`sudo bash install/setup.sh --basic-user NAME`"}
+	}
+	return def, nil
+}
 
 // splitKey turns "project/NAME" into its parts.
 func splitKey(s string) (string, string, error) {

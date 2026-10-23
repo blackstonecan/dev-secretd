@@ -7,6 +7,9 @@
 #                                           (keeps the master key and the store)
 #   sudo bash install/setup.sh --purge      also delete the master key and the store
 #   sudo bash install/setup.sh --new-key    make a new master key (only while the store is empty)
+#   sudo bash install/setup.sh --basic-user NAME
+#                                           install or update, and make NAME the default
+#                                           username of `--basic` bindings (kept on updates)
 #
 # What install does:
 #   - makes the system user devsecrets (no login, no home)
@@ -32,7 +35,13 @@ uninstall() {
   echo "removed the service, the binaries and the sudoers rule"
 }
 
+# The default username of `--basic` bindings survives updates.
+basic_user=$(sed -n 's/^ *"basic_user": *"\([^"]*\)".*/\1/p' /etc/secretd/config.json 2>/dev/null || true)
+
 case "${1:-}" in
+  --basic-user)
+    basic_user=${2:?--basic-user needs a name}
+    [[ $basic_user =~ ^[A-Za-z0-9._-]{1,64}$ ]] || die "invalid username '$basic_user'" ;;
   --uninstall)
     uninstall
     echo "kept /etc/secretd (master key) and /var/lib/secretd (store)"
@@ -70,8 +79,10 @@ install -o root -g root -m 0755 "$src/dist/secretd" /usr/local/bin/secretd
 
 # 3. Config (no secrets in it)
 install -d -o root -g root -m 0755 /etc/secretd
-printf '{\n  "socket": "/run/secretd/api.sock",\n  "proxy_addr": "127.0.0.1:7777",\n  "state_dir": "/var/lib/secretd",\n  "master_cred": "/etc/secretd/master.cred",\n  "allow_uid": %s\n}\n' \
-  "$uid" > /etc/secretd/config.json
+extra=""
+[[ -n $basic_user ]] && extra=$(printf ',\n  "basic_user": "%s"' "$basic_user")
+printf '{\n  "socket": "/run/secretd/api.sock",\n  "proxy_addr": "127.0.0.1:7777",\n  "state_dir": "/var/lib/secretd",\n  "master_cred": "/etc/secretd/master.cred",\n  "allow_uid": %s%s\n}\n' \
+  "$uid" "$extra" > /etc/secretd/config.json
 chmod 0644 /etc/secretd/config.json
 
 # 4. Master key, once. Losing it (or the TPM/host key) makes the store unreadable:

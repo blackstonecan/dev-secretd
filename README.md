@@ -151,6 +151,37 @@ then a missing project secret is an error again.
 Turning a default on or off for an existing secret is root-only, like
 `bind`; `secret set --user --default` can only make a new one.
 
+### Several hosts, and git over HTTPS
+
+One secret can go to several hosts (up to 8, HTTPS only), so one GitHub token
+serves the API and git:
+
+```bash
+/usr/bin/sudo secret bind user/GITHUB_TOKEN --host api.github.com,github.com --header Authorization --basic
+```
+
+- The first host is the default: `/user/GITHUB_TOKEN/<path>` goes to
+  `https://api.github.com/<path>`. A first path segment that is exactly one of
+  the bound hosts picks that host: `/user/GITHUB_TOKEN/github.com/<path>` goes
+  to `https://github.com/<path>`. A host that is not bound is never reached.
+  In a manifest: `"{proxy}/github.com"`.
+- `--basic` sends `Authorization: Basic base64(USER:token)`, which git over
+  HTTPS needs (GitHub's API accepts it too). USER is `basic_user` from
+  `/etc/secretd/config.json`, set with
+  `sudo bash install/setup.sh --basic-user NAME` (kept on updates);
+  `--basic-user NAME` overrides it for one binding. The username is stored in
+  the binding, so changing the default later changes no existing secret.
+- The proxy masks the base64 form in responses as well as the raw value.
+
+Push through the proxy (fetch keeps the normal URL; no token in git):
+
+```bash
+git remote set-url --push origin http://127.0.0.1:7777/user/GITHUB_TOKEN/github.com/OWNER/REPO.git
+```
+
+A repo for another account points its push URL at its project's own secret
+(`/<project>/GITHUB_TOKEN/github.com/...`), bound the same way.
+
 - Nothing is copied or overwritten: the fallback is a lookup at `secret run`
   time. The user value changes only with `sudo secret rotate user/NAME`.
 - Only a *missing* project secret falls back. A project secret with the wrong
