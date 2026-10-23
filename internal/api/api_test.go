@@ -8,8 +8,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/blackstonecan/secretd/internal/state"
-	"github.com/blackstonecan/secretd/internal/store"
+	"github.com/blackstonecan/dev-secretd/internal/state"
+	"github.com/blackstonecan/dev-secretd/internal/store"
 )
 
 // startServer serves the API on a temporary socket. allowUID lets a test

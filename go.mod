@@ -1,4 +1,4 @@
-module github.com/blackstonecan/secretd
+module github.com/blackstonecan/dev-secretd
 
 go 1.26.0
 

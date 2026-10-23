@@ -35,7 +35,7 @@ import (
 	"regexp"
 	"sort"
 
-	"github.com/blackstonecan/secretd/internal/store"
+	"github.com/blackstonecan/dev-secretd/internal/store"
 	"gopkg.in/yaml.v3"
 )
 

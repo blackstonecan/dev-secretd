@@ -14,12 +14,12 @@ import (
 	"syscall"
 	"text/tabwriter"
 
-	"github.com/blackstonecan/secretd/internal/api"
-	"github.com/blackstonecan/secretd/internal/config"
-	"github.com/blackstonecan/secretd/internal/dotenv"
-	"github.com/blackstonecan/secretd/internal/manifest"
-	"github.com/blackstonecan/secretd/internal/runenv"
-	"github.com/blackstonecan/secretd/internal/store"
+	"github.com/blackstonecan/dev-secretd/internal/api"
+	"github.com/blackstonecan/dev-secretd/internal/config"
+	"github.com/blackstonecan/dev-secretd/internal/dotenv"
+	"github.com/blackstonecan/dev-secretd/internal/manifest"
+	"github.com/blackstonecan/dev-secretd/internal/runenv"
+	"github.com/blackstonecan/dev-secretd/internal/store"
 	"golang.org/x/term"
 )
 

@@ -15,11 +15,11 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/blackstonecan/secretd/internal/api"
-	"github.com/blackstonecan/secretd/internal/config"
-	"github.com/blackstonecan/secretd/internal/proxy"
-	"github.com/blackstonecan/secretd/internal/state"
-	"github.com/blackstonecan/secretd/internal/store"
+	"github.com/blackstonecan/dev-secretd/internal/api"
+	"github.com/blackstonecan/dev-secretd/internal/config"
+	"github.com/blackstonecan/dev-secretd/internal/proxy"
+	"github.com/blackstonecan/dev-secretd/internal/state"
+	"github.com/blackstonecan/dev-secretd/internal/store"
 )
 
 func main() {

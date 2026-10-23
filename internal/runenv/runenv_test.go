@@ -5,9 +5,9 @@ import (
 	"slices"
 	"testing"
 
-	"github.com/blackstonecan/secretd/internal/api"
-	"github.com/blackstonecan/secretd/internal/manifest"
-	"github.com/blackstonecan/secretd/internal/store"
+	"github.com/blackstonecan/dev-secretd/internal/api"
+	"github.com/blackstonecan/dev-secretd/internal/manifest"
+	"github.com/blackstonecan/dev-secretd/internal/store"
 )
 
 func TestBuild(t *testing.T) {

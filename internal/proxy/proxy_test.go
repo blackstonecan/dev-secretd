@@ -9,8 +9,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/blackstonecan/secretd/internal/state"
-	"github.com/blackstonecan/secretd/internal/store"
+	"github.com/blackstonecan/dev-secretd/internal/state"
+	"github.com/blackstonecan/dev-secretd/internal/store"
 )
 
 type fixture struct {

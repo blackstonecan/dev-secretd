@@ -11,9 +11,9 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/blackstonecan/secretd/internal/config"
-	"github.com/blackstonecan/secretd/internal/state"
-	"github.com/blackstonecan/secretd/internal/store"
+	"github.com/blackstonecan/dev-secretd/internal/config"
+	"github.com/blackstonecan/dev-secretd/internal/state"
+	"github.com/blackstonecan/dev-secretd/internal/store"
 )
 
 // rootCommand runs commands that need the master key. Only root can decrypt

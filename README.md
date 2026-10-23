@@ -1,9 +1,13 @@
-# secretd
+# dev-secretd
 
-Store secrets that agents can **use** but cannot **see**. One store for all
-projects on this machine. Your user (and every agent that runs as your user)
+Store secrets that agents can **use** but cannot **see**: a secret broker for
+a development machine where AI coding agents run, not a production secret
+manager. One store for all projects on this machine. Your user (and every agent that runs as your user)
 can add secrets and use them; only root (you, with `sudo` and your password)
 can read, change or delete them.
+
+The installed pieces keep the short names: the `secret` CLI, the `secretd`
+daemon and systemd service, and `/etc/secretd`, `/var/lib/secretd`.
 
 ## How it works
 
