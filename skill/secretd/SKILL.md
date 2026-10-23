@@ -151,6 +151,9 @@ git remote set-url --push origin http://127.0.0.1:7777/user/GITHUB_TOKEN/github.
 git push
 ```
 
+A private repo needs the proxy for fetch and pull too: set the fetch URL the
+same way (`git remote set-url origin <proxy URL>`).
+
 - Set a push URL only for the user's own repos, with the user's secret. A repo
   of another account (a client, a teammate) uses its project's secret
   (`/<project>/GITHUB_TOKEN/github.com/...`); if that does not exist, stop and

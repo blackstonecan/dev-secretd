@@ -173,10 +173,12 @@ serves the API and git:
   the binding, so changing the default later changes no existing secret.
 - The proxy masks the base64 form in responses as well as the raw value.
 
-Push through the proxy (fetch keeps the normal URL; no token in git):
+Push through the proxy (no token in git). A public repo can keep fetching
+from the normal URL; a private repo fetches through the proxy too:
 
 ```bash
-git remote set-url --push origin http://127.0.0.1:7777/user/GITHUB_TOKEN/github.com/OWNER/REPO.git
+git remote set-url --push origin http://127.0.0.1:7777/user/GITHUB_TOKEN/github.com/OWNER/REPO.git   # push only
+git remote set-url origin http://127.0.0.1:7777/user/GITHUB_TOKEN/github.com/OWNER/REPO.git          # private: fetch too
 ```
 
 A repo for another account points its push URL at its project's own secret
