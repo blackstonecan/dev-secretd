@@ -2,7 +2,8 @@
 //
 // The API is write-only for secret values, with one exception: run-tier
 // values go to `secret run`, which puts them into a child process. Proxy-tier
-// values never leave the daemon. Changes to existing secrets (rotate, rm,
+// values never leave the daemon. Public values are not secret: list, get and
+// resolve return them, and set may change them. Changes to existing secrets (rotate, rm,
 // bind) are not in this API; only root can make them, on the store directly.
 package api
 
@@ -38,6 +39,7 @@ type Info struct {
 	Kind      store.Kind     `json:"kind,omitempty"`
 	Binding   *store.Binding `json:"binding,omitempty"`
 	Default   bool           `json:"default,omitempty"`
+	Value     string         `json:"value,omitempty"` // public values only
 	CreatedAt time.Time      `json:"created_at"`
 	UpdatedAt time.Time      `json:"updated_at"`
 	Locked    bool           `json:"locked"`
@@ -113,6 +115,7 @@ func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /v1/set", s.set)
 	mux.HandleFunc("GET /v1/list", s.list)
+	mux.HandleFunc("GET /v1/get", s.get)
 	mux.HandleFunc("POST /v1/resolve", s.resolve)
 	mux.HandleFunc("POST /v1/lock", s.lockFn(true))
 	mux.HandleFunc("POST /v1/unlock", s.lockFn(false))
@@ -143,7 +146,17 @@ func (s *Server) set(w http.ResponseWriter, r *http.Request) {
 		req.Kind = store.KindEnv
 	}
 	sec := store.Secret{Project: req.Project, Name: req.Name, Tier: req.Tier, Kind: req.Kind, Binding: req.Binding, Value: req.Value, Default: req.Default}
-	err := s.Store.Create(sec, s.now())
+	var err error
+	if req.Tier == store.TierPublic {
+		// Public values are not secret, so the user may change them.
+		if req.Kind != "" || req.Binding != nil || req.Default {
+			err = errors.New("a public value has no kind, binding or default")
+		} else {
+			err = s.Store.SetPublic(req.Project, req.Name, req.Value, s.now())
+		}
+	} else {
+		err = s.Store.Create(sec, s.now())
+	}
 	s.log(r, "set", req.Project, req.Name, string(req.Tier), err)
 	if err != nil {
 		code := http.StatusBadRequest
@@ -164,12 +177,41 @@ func (s *Server) list(w http.ResponseWriter, r *http.Request) {
 	}
 	out := make([]Info, 0, len(secs))
 	for _, sec := range secs {
-		out = append(out, Info{
-			Project: sec.Project, Name: sec.Name, Tier: sec.Tier, Kind: sec.Kind, Binding: sec.Binding, Default: sec.Default,
-			CreatedAt: sec.CreatedAt, UpdatedAt: sec.UpdatedAt, Locked: s.State.IsLocked(sec.Project),
-		})
+		out = append(out, info(&sec, s.State.IsLocked(sec.Project)))
 	}
 	writeJSON(w, out)
+}
+
+// info describes a secret. Only public values carry their value.
+func info(sec *store.Secret, locked bool) Info {
+	in := Info{
+		Project: sec.Project, Name: sec.Name, Tier: sec.Tier, Kind: sec.Kind, Binding: sec.Binding, Default: sec.Default,
+		CreatedAt: sec.CreatedAt, UpdatedAt: sec.UpdatedAt, Locked: locked,
+	}
+	if sec.Tier == store.TierPublic {
+		in.Value = sec.Value
+	}
+	return in
+}
+
+// get returns a public value: the project's, or the user scope's.
+func (s *Server) get(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query()
+	project, name := q.Get("project"), q.Get("name")
+	if !store.ValidProject(project) || !store.ValidName(name) {
+		writeErr(w, http.StatusBadRequest, fmt.Errorf("invalid project %q or name %q", project, name))
+		return
+	}
+	sec, err := s.Store.ResolvePublic(project, name)
+	switch {
+	case errors.Is(err, store.ErrNotFound):
+		writeErr(w, http.StatusNotFound, fmt.Errorf("no public value %s/%s or %s/%s (add one with `secret set NAME VALUE --public`)",
+			project, name, store.UserProject, name))
+	case err != nil:
+		writeErr(w, http.StatusForbidden, err)
+	default:
+		writeJSON(w, info(sec, s.State.IsLocked(sec.Project)))
+	}
 }
 
 func (s *Server) resolve(w http.ResponseWriter, r *http.Request) {
@@ -198,6 +240,13 @@ func (s *Server) resolve(w http.ResponseWriter, r *http.Request) {
 		if errors.Is(err, store.ErrNotFound) && req.Project != store.UserProject && it.Fallback != "none" {
 			u, uerr := s.Store.Get(store.UserProject, it.Name)
 			switch {
+			// Public values are not secret: they always fall back, and a locked
+			// user scope does not block them. A private user secret of the name
+			// still fails the tier check below, without its value.
+			case it.Tier == store.TierPublic:
+				if !errors.Is(uerr, store.ErrNotFound) {
+					sec, err = u, uerr
+				}
 			case uerr == nil && (it.Fallback == store.UserProject || u.Default):
 				if s.State.IsLocked(store.UserProject) {
 					fail(http.StatusForbidden, fmt.Errorf("%s: project %s is locked", it.Name, store.UserProject))

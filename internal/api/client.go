@@ -39,6 +39,13 @@ func (c *Client) List(project string) ([]Info, error) {
 	return out, err
 }
 
+// Get returns a public value of the project, or of the user scope.
+func (c *Client) Get(project, name string) (Info, error) {
+	var out Info
+	err := c.do("GET", "/v1/get?project="+url.QueryEscape(project)+"&name="+url.QueryEscape(name), nil, &out)
+	return out, err
+}
+
 func (c *Client) Resolve(req ResolveRequest) ([]Resolved, error) {
 	var out []Resolved
 	err := c.do("POST", "/v1/resolve", req, &out)

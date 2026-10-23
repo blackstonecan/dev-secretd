@@ -10,6 +10,23 @@ import (
 	"github.com/blackstonecan/dev-secretd/internal/store"
 )
 
+func TestBuildPublic(t *testing.T) {
+	m := &manifest.Manifest{Project: "demo", Secrets: map[string]manifest.Entry{
+		"GITHUB_USERNAME": {Tier: store.TierPublic},
+		"GITHUB_ORG":      {Tier: store.TierPublic, Var: "ORG"},
+	}}
+	env, err := Build(m, []api.Resolved{
+		{Project: "user", Name: "GITHUB_USERNAME", Tier: store.TierPublic, Value: "blackstonecan"},
+		{Project: "demo", Name: "GITHUB_ORG", Tier: store.TierPublic, Value: "acme"},
+	}, t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if env.Vars["GITHUB_USERNAME"] != "blackstonecan" || env.Vars["ORG"] != "acme" || env.FileDir != "" {
+		t.Fatalf("public vars: %+v", env)
+	}
+}
+
 func TestBuild(t *testing.T) {
 	m := &manifest.Manifest{Project: "demo", Secrets: map[string]manifest.Entry{
 		"API_KEY":     {Tier: store.TierProxy, Env: map[string]string{"BASE_URL": "{proxy}/v1", "API_KEY": "placeholder"}},

@@ -67,6 +67,17 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	b := sec.Binding
+	// Basic auth takes its username from a public value: the secret's
+	// project first, then the user scope.
+	username := ""
+	if b.Basic != "" {
+		u, err := p.Store.ResolvePublic(sec.Project, b.Basic)
+		if err != nil {
+			fail(http.StatusInternalServerError, fmt.Sprintf("basic username %s: %v (set it with `secret set %s NAME --public`)", b.Basic, err, b.Basic))
+			return
+		}
+		username = u.Value
+	}
 	host, rest := pickHost(b, rest)
 	scheme := p.Scheme
 	if scheme == "" {
@@ -77,9 +88,11 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// The header value can hold the secret in another form (Basic auth is
 	// base64); mask that too.
 	masks := []string{sec.Value}
+	headerValue := ""
 	if b.Header != "" {
-		if hv := b.HeaderValue(sec.Value); !strings.Contains(hv, sec.Value) {
-			masks = append(masks, strings.TrimPrefix(hv, "Basic "))
+		headerValue = b.HeaderValue(sec.Value, username)
+		if !strings.Contains(headerValue, sec.Value) {
+			masks = append(masks, strings.TrimPrefix(headerValue, "Basic "))
 		}
 	}
 
@@ -102,7 +115,7 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			pr.Out.Header.Del("Proxy-Authorization")
 			if b.Header != "" {
 				pr.Out.Header.Del(b.Header)
-				pr.Out.Header.Set(b.Header, b.HeaderValue(sec.Value))
+				pr.Out.Header.Set(b.Header, headerValue)
 			} else {
 				q := pr.Out.URL.Query()
 				q.Set(b.Query, sec.Value)

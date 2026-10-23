@@ -21,6 +21,8 @@ User commands:
   secret init --project NAME              make secrets.yaml in this folder
   secret init --user                      make the user manifest (~/.config/secretd/user.yaml)
   secret set NAME [flags]                 add a new secret (hidden input or stdin)
+  secret set NAME VALUE --public          add or change a public value (not secret: anyone
+                                          can read it; a project without its own uses the user's)
       --project P      default: from secrets.yaml
       --user           user scope: projects use it with "fallback: user"
                        in secrets.yaml; their own secret of the name wins
@@ -31,11 +33,11 @@ User commands:
                        /P/NAME/<path> goes to the first, /P/NAME/H2/<path> to H2
       --header X       proxy tier: header name, for example x-api-key
       --format F       proxy tier: header template, for example "Bearer {}"
-      --basic          proxy tier: header value "Basic base64(USER:secret)", USER from
-                       basic_user in /etc/secretd/config.json (git over HTTPS needs it)
-      --basic-user U   like --basic, with username U
+      --basic NAME     proxy tier: header value "Basic base64(USER:secret)", USER is the
+                       public value NAME (git over HTTPS needs it)
       --query Q        proxy tier: query parameter, instead of a header
-  secret list [--project P | --all]       names and rules, never values
+  secret get NAME [--project P | --user]  print a public value (the project's, else the user's)
+  secret list [--project P | --all]       names and rules; values of public entries only
   secret run [--project P] -- CMD...      run CMD with the secrets of secrets.yaml
   secret run --user -- CMD...             run CMD with the secrets of the user manifest
   secret import FILE [--keep K1,K2] [--yes]
@@ -48,8 +50,8 @@ Root commands (run with: /usr/bin/sudo secret ...):
   reveal P/NAME        print a value (run it in your own terminal, not in an agent)
   rotate P/NAME        replace a value
   rm P/NAME            delete a secret
-  bind P/NAME [--host H[,H2] --header X [--format F | --basic | --basic-user U] | --query Q | --run [--file]]
-                       change the tier or the binding
+  bind P/NAME [--host H[,H2] --header X [--format F | --basic NAME] | --query Q | --run [--file]]
+                       change the tier or the binding (private and public never convert)
   bind user/NAME --default | --no-default
                        make a user-scope secret a default for all projects, or not
   export --recipient AGE_PUBLIC_KEY --out FILE
@@ -68,6 +70,8 @@ func main() {
 		err = cmdInit(args)
 	case "set":
 		err = cmdSet(args)
+	case "get":
+		err = cmdGet(args)
 	case "list":
 		err = cmdList(args)
 	case "run":
@@ -102,21 +106,6 @@ func main() {
 type usageError struct{ msg string }
 
 func (e usageError) Error() string { return e.msg }
-
-// basicUser is the Basic auth username of a binding: --basic-user NAME, or
-// with --basic the default from the config. Empty: no Basic auth.
-func basicUser(basic bool, name, def string) (string, error) {
-	switch {
-	case name != "":
-		return name, nil
-	case !basic:
-		return "", nil
-	case def == "":
-		return "", usageError{"--basic has no default username: use --basic-user NAME, or set one with " +
-			"`sudo bash install/setup.sh --basic-user NAME`"}
-	}
-	return def, nil
-}
 
 // splitKey turns "project/NAME" into its parts.
 func splitKey(s string) (string, string, error) {

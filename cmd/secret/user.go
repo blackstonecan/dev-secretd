@@ -91,15 +91,20 @@ func cmdSet(args []string) error {
 	host := fs.String("host", "", "")
 	header := fs.String("header", "", "")
 	format := fs.String("format", "", "")
-	basic := fs.Bool("basic", false, "")
-	basicName := fs.String("basic-user", "", "")
+	basic := fs.String("basic", "", "")
 	query := fs.String("query", "", "")
+	public := fs.Bool("public", false, "")
 	name, rest := firstArg(args)
+	// A value on the command line: public values only (secret values are typed hidden).
+	given, rest := firstArg(rest)
 	if err := fs.Parse(rest); err != nil {
 		return usageError{err.Error()}
 	}
 	if name == "" || fs.NArg() > 0 {
-		return usageError{"usage: secret set NAME [flags]"}
+		return usageError{"usage: secret set NAME [flags] | secret set NAME VALUE --public"}
+	}
+	if given != "" && !*public {
+		return usageError{"a value on the command line is for --public values only; secret values are typed hidden or read from stdin"}
 	}
 	if *user {
 		if *project != "" {
@@ -114,28 +119,22 @@ func cmdSet(args []string) error {
 	if err != nil {
 		return err
 	}
+	if *public {
+		if *def || *isFile || *host != "" || *header != "" || *format != "" || *basic != "" || *query != "" {
+			return usageError{"a public value takes only a value, --project and --user"}
+		}
+		return setPublic(p, name, given)
+	}
 
 	req := api.SetRequest{Project: p, Name: name, Tier: store.TierRun, Kind: store.KindEnv, Default: *def}
 	if *host != "" || *header != "" || *query != "" {
 		if *isFile {
 			return usageError{"--file is for run-tier secrets only"}
 		}
-		def := ""
-		if *basic && *basicName == "" {
-			cfg, err := config.Load()
-			if err != nil {
-				return err
-			}
-			def = cfg.BasicUser
-		}
-		user, err := basicUser(*basic, *basicName, def)
-		if err != nil {
-			return err
-		}
 		h, extra := store.ParseHosts(*host)
 		req.Tier, req.Kind = store.TierProxy, ""
-		req.Binding = &store.Binding{Host: h, ExtraHosts: extra, Header: *header, Format: *format, Basic: user, Query: *query}
-	} else if *basic || *basicName != "" {
+		req.Binding = &store.Binding{Host: h, ExtraHosts: extra, Header: *header, Format: *format, Basic: *basic, Query: *query}
+	} else if *basic != "" {
 		return usageError{"--basic is for proxy-tier secrets: add --host and --header"}
 	} else if *isFile {
 		req.Kind = store.KindFile
@@ -177,6 +176,76 @@ func cmdSet(args []string) error {
 	} else {
 		fmt.Printf("add to secrets.yaml:\n  %s:\n    tier: run\n", name)
 	}
+	return nil
+}
+
+// setPublic adds or changes a public value. Without a value on the command
+// line it reads one visible line from the terminal, or stdin.
+func setPublic(project, name, value string) error {
+	if value == "" {
+		if term.IsTerminal(int(os.Stdin.Fd())) {
+			fmt.Fprintf(os.Stderr, "Value for %s/%s (public, visible): ", project, name)
+		}
+		line, err := bufio.NewReader(os.Stdin).ReadString('\n')
+		if err != nil && !errors.Is(err, io.EOF) {
+			return err
+		}
+		if value = strings.TrimRight(line, "\r\n"); value == "" {
+			return errors.New("empty value")
+		}
+	}
+	c, err := client()
+	if err != nil {
+		return err
+	}
+	if err := c.Set(api.SetRequest{Project: project, Name: name, Tier: store.TierPublic, Value: value}); err != nil {
+		return err
+	}
+	fmt.Printf("set %s/%s = %s (public)\n", project, name, value)
+	if project == store.UserProject {
+		fmt.Printf("every project gets it unless it has its own %s\n", name)
+	}
+	return nil
+}
+
+// cmdGet prints a public value: the project's, or the user scope's.
+func cmdGet(args []string) error {
+	fs := flag.NewFlagSet("get", flag.ContinueOnError)
+	project := fs.String("project", "", "")
+	user := fs.Bool("user", false, "")
+	name, rest := firstArg(args)
+	if err := fs.Parse(rest); err != nil {
+		return usageError{err.Error()}
+	}
+	if name == "" || fs.NArg() > 0 {
+		return usageError{"usage: secret get NAME [--project P | --user]"}
+	}
+	p := *project
+	switch {
+	case *user && p != "":
+		return usageError{"use --project or --user, not both"}
+	case *user:
+		p = store.UserProject
+	case p == "":
+		// In a project: its value, else the user's. Elsewhere: the user's.
+		m, err := manifest.Find(".")
+		if err != nil && !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+		p = store.UserProject
+		if m != nil {
+			p = m.Project
+		}
+	}
+	c, err := client()
+	if err != nil {
+		return err
+	}
+	in, err := c.Get(p, name)
+	if err != nil {
+		return err
+	}
+	fmt.Println(in.Value)
 	return nil
 }
 
@@ -257,7 +326,7 @@ func cmdList(args []string) error {
 		}
 		for _, s := range users {
 			e, listed := m.Secrets[s.Name]
-			if !listed || e.Fallback == "none" || (e.Fallback != store.UserProject && !s.Default) {
+			if !listed || e.Fallback == "none" || (e.Fallback != store.UserProject && !s.Default && s.Tier != store.TierPublic) {
 				continue
 			}
 			list = append(list, s)
@@ -278,12 +347,15 @@ func cmdList(args []string) error {
 			hosts := strings.Join(b.Hosts(), ",")
 			switch {
 			case b.Basic != "":
-				use = hosts + " header " + b.Header + " basic " + b.Basic
+				use = hosts + " header " + b.Header + " basic user=" + b.Basic
 			case b.Header != "":
 				use = hosts + " header " + b.Header
 			default:
 				use = hosts + " query " + b.Query
 			}
+		}
+		if s.Tier == store.TierPublic {
+			use = "= " + s.Value
 		}
 		note := ""
 		if s.Project == store.UserProject {

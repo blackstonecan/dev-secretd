@@ -41,6 +41,12 @@ func Build(m *manifest.Manifest, resolved []api.Resolved, runtimeDir string) (*E
 			for k, v := range e.Env {
 				env.Vars[k] = strings.ReplaceAll(v, "{proxy}", r.BaseURL)
 			}
+		case store.TierPublic:
+			name := e.Var
+			if name == "" {
+				name = r.Name
+			}
+			env.Vars[name] = r.Value
 		case store.TierRun:
 			name := e.Var
 			if name == "" {

@@ -12,10 +12,8 @@ secret="$work/bin/secret"
 mkdir -p "$work/state" "$work/project" "$work/tier" "$work/app"
 port=$(( 20000 + RANDOM % 20000 ))
 openssl rand -hex 32 > "$work/master.key"
-printf '{"socket": "%s", "proxy_addr": "127.0.0.1:%s", "state_dir": "%s", "master_cred": "%s", "allow_uid": %s, "basic_user": "e2e-user"}\n' \
+printf '{"socket": "%s", "proxy_addr": "127.0.0.1:%s", "state_dir": "%s", "master_cred": "%s", "allow_uid": %s}\n' \
   "$work/api.sock" "$port" "$work/state" "$work/unused.cred" "$(id -u)" > "$work/config.json"
-# The same daemon, seen through a config without a default --basic username.
-sed 's/, "basic_user": "e2e-user"//' "$work/config.json" > "$work/config-nobasic.json"
 export SECRETD_CONFIG="$work/config.json"
 
 "$work/bin/secretd" --config "$work/config.json" --master-key-file "$work/master.key" 2>"$work/daemon.log" &
@@ -136,13 +134,32 @@ check "bind --default needs root"  "needs root"          "$("$secret" bind user/
 
 # --- several hosts, Basic auth ---
 cd "$work/project"
-check "set: hosts + --basic"    "stored demo/GIT_TOKEN"   "$(printf 'git-tok' | "$secret" set GIT_TOKEN --host api.example.com,git.example.com --header Authorization --basic)"
-check "list: hosts and basic"   "api.example.com,git.example.com header Authorization basic e2e-user" "$("$secret" list | grep demo/GIT_TOKEN)"
-check "set: --basic-user"       "basic other-user"        "$(printf 'git-tok2' | "$secret" set GIT_TOKEN2 --host git.example.com --header Authorization --basic-user other-user >/dev/null && "$secret" list | grep demo/GIT_TOKEN2)"
-check "basic needs a default"   "no default username"     "$(printf 'x' | SECRETD_CONFIG="$work/config-nobasic.json" "$secret" set GIT_TOKEN3 --host git.example.com --header Authorization --basic 2>&1 || true)"
-check "basic needs proxy tier"  "for proxy-tier secrets"  "$(printf 'x' | "$secret" set GIT_TOKEN4 --basic 2>&1 || true)"
-check "basic and format refused" "--basic needs --header and no --format" "$(printf 'x' | "$secret" set GIT_TOKEN5 --host a.example.com --header Authorization --format 'Bearer {}' --basic 2>&1 || true)"
+check "set: hosts + --basic"    "stored demo/GIT_TOKEN"   "$(printf 'git-tok' | "$secret" set GIT_TOKEN --host api.example.com,git.example.com --header Authorization --basic E2E_USERNAME)"
+check "list: hosts and basic"   "api.example.com,git.example.com header Authorization basic user=E2E_USERNAME" "$("$secret" list | grep demo/GIT_TOKEN)"
+check "proxy: username missing" "basic username E2E_USERNAME" "$(curl -s "http://127.0.0.1:$port/demo/GIT_TOKEN/x")"
+check "basic names a value"     "UPPER_SNAKE_CASE"        "$(printf 'x' | "$secret" set GIT_TOKEN2 --host git.example.com --header Authorization --basic someone 2>&1 || true)"
+check "basic needs proxy tier"  "for proxy-tier secrets"  "$(printf 'x' | "$secret" set GIT_TOKEN4 --basic E2E_USERNAME 2>&1 || true)"
+check "basic and format refused" "--basic needs --header and no --format" "$(printf 'x' | "$secret" set GIT_TOKEN5 --host a.example.com --header Authorization --format 'Bearer {}' --basic E2E_USERNAME 2>&1 || true)"
 check "duplicate host refused"  "listed twice"            "$(printf 'x' | "$secret" set GIT_TOKEN6 --host a.example.com,A.example.com --header x 2>&1 || true)"
+
+# --- public values ---
+mkdir -p "$work/pub" && cd "$work/pub"
+printf '%s\n' 'project: pub' 'secrets:' '  E2E_USERNAME:' '    tier: public' '  E2E_ORG:' '    tier: public' '    var: ORG' > secrets.yaml
+check "public: set (user)"      "set user/E2E_USERNAME = e2e-user (public)" "$("$secret" set E2E_USERNAME e2e-user --user --public)"
+check "public: change, no root" "= e2e-user2"             "$("$secret" set E2E_USERNAME e2e-user2 --user --public)"
+check "public: get falls back"  "e2e-user2"               "$("$secret" get E2E_USERNAME)"
+check "public: list shows it"   "= e2e-user2"             "$("$secret" list --all | grep user/E2E_USERNAME)"
+check "public: list fallback"   "fallback"                "$("$secret" list | grep user/E2E_USERNAME)"
+check "public: stdin value"     "set pub/E2E_ORG = acme"  "$(printf 'acme\n' | "$secret" set E2E_ORG --public)"
+check "public: run env"         "e2e-user2|acme"          "$("$secret" run -- sh -c 'echo "$E2E_USERNAME|$ORG"' 2>/dev/null)"
+check "public: project wins"    "pub-bot"                 "$("$secret" set E2E_USERNAME pub-bot --public >/dev/null && "$secret" get E2E_USERNAME)"
+check "public: user unchanged"  "e2e-user2"               "$("$secret" get E2E_USERNAME --user)"
+check "value arg needs --public" "for --public values only" "$("$secret" set SOME_TOKEN typed-value 2>&1 || true)"
+check "public cannot replace private" "a name is either private or public" "$("$secret" set NPM_TOKEN x --user --public 2>&1 || true)"
+check "get refuses private"     "is a private secret"     "$("$secret" get NPM_TOKEN --user 2>&1 || true)"
+printf '%s\n' 'project: pub' 'secrets:' '  NPM_TOKEN:' '    tier: public' > "$work/pub/secrets.yaml"
+check "manifest cannot make private public" "the store says run" "$("$secret" run -- true 2>&1 || true)"
+check "bind refuses public"     "needs root"              "$("$secret" bind user/E2E_USERNAME --run 2>&1 || true)"
 
 # --- root and audit ---
 check "root commands need sudo" "needs root" "$("$secret" reveal demo/DB_PASSWORD 2>&1 || true)"

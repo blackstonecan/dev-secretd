@@ -9,6 +9,8 @@
 //	    env:
 //	      ANTHROPIC_BASE_URL: "{proxy}"
 //	      ANTHROPIC_API_KEY: placeholder
+//	  GITHUB_USERNAME:
+//	    tier: public         # not secret; the project's value, else the user's
 //	  POSTGRES_PASSWORD:
 //	    tier: run            # var defaults to the secret name
 //	  FIREBASE_ADMIN:
@@ -112,15 +114,15 @@ func (m *Manifest) Validate() error {
 					return fmt.Errorf("%s: %s: invalid env var %q", m.Path, name, k)
 				}
 			}
-		case store.TierRun:
+		case store.TierRun, store.TierPublic:
 			if len(e.Env) != 0 {
-				return fmt.Errorf("%s: %s: a run entry has var, not env", m.Path, name)
+				return fmt.Errorf("%s: %s: a %s entry has var, not env", m.Path, name, e.Tier)
 			}
 			if e.Var != "" && !envRe.MatchString(e.Var) {
 				return fmt.Errorf("%s: %s: invalid var %q", m.Path, name, e.Var)
 			}
 		default:
-			return fmt.Errorf("%s: %s: tier must be proxy or run", m.Path, name)
+			return fmt.Errorf("%s: %s: tier must be proxy, run or public", m.Path, name)
 		}
 		if e.Fallback != "" {
 			if e.Fallback != store.UserProject && e.Fallback != "none" {

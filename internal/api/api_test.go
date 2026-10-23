@@ -274,6 +274,75 @@ func TestDefaultOnlyForUserScope(t *testing.T) {
 	}
 }
 
+func TestPublicValues(t *testing.T) {
+	c, _ := startServer(t, os.Getuid())
+	must(t, c.Set(SetRequest{Project: "user", Name: "GITHUB_USERNAME", Tier: store.TierPublic, Value: "blackstonecan"}))
+	// Public values may be changed without root.
+	must(t, c.Set(SetRequest{Project: "user", Name: "GITHUB_USERNAME", Tier: store.TierPublic, Value: "blackstonecan"}))
+
+	in, err := c.Get("demo", "GITHUB_USERNAME")
+	must(t, err)
+	if in.Value != "blackstonecan" || in.Project != "user" {
+		t.Fatalf("get with fallback: %+v", in)
+	}
+	list, err := c.List("user")
+	must(t, err)
+	if len(list) != 1 || list[0].Value != "blackstonecan" {
+		t.Fatalf("list shows public values: %+v", list)
+	}
+	// Resolve: always falls back, no fallback line needed, and a locked user scope does not block it.
+	must(t, c.Lock("user", true))
+	res, err := c.Resolve(ResolveRequest{Project: "demo", Items: []ResolveItem{{Name: "GITHUB_USERNAME", Tier: store.TierPublic}}})
+	must(t, err)
+	if res[0].Value != "blackstonecan" || res[0].Project != "user" {
+		t.Fatalf("resolve public: %+v", res[0])
+	}
+	must(t, c.Lock("user", false))
+	// `fallback: none` still opts out.
+	if _, err := c.Resolve(ResolveRequest{Project: "demo", Items: []ResolveItem{{Name: "GITHUB_USERNAME", Tier: store.TierPublic, Fallback: "none"}}}); err == nil {
+		t.Fatal("fallback none got the user's public value")
+	}
+	// The project's own value wins.
+	must(t, c.Set(SetRequest{Project: "demo", Name: "GITHUB_USERNAME", Tier: store.TierPublic, Value: "demo-bot"}))
+	if in, _ := c.Get("demo", "GITHUB_USERNAME"); in.Value != "demo-bot" {
+		t.Fatalf("project value: %+v", in)
+	}
+}
+
+func TestPublicNeverExposesPrivate(t *testing.T) {
+	c, _ := startServer(t, os.Getuid())
+	must(t, c.Set(SetRequest{Project: "user", Name: "TOKEN", Tier: store.TierRun, Value: "private-value"}))
+	must(t, c.Set(SetRequest{Project: "user", Name: "API", Tier: store.TierProxy, Value: "proxy-value",
+		Binding: &store.Binding{Host: "api.example.com", Header: "x-api-key"}}))
+
+	for _, name := range []string{"TOKEN", "API"} {
+		// A manifest that claims tier public gets a tier conflict, not the value.
+		_, err := c.Resolve(ResolveRequest{Project: "demo", Items: []ResolveItem{{Name: name, Tier: store.TierPublic}}})
+		if err == nil || !strings.Contains(err.Error(), "the store says") || strings.Contains(err.Error(), "-value") {
+			t.Fatalf("%s: resolve as public: %v", name, err)
+		}
+		in, err := c.Get("demo", name)
+		if err == nil || in.Value != "" || strings.Contains(err.Error(), "-value") {
+			t.Fatalf("%s: get: %+v %v", name, in, err)
+		}
+		// A public value cannot replace it.
+		if err := c.Set(SetRequest{Project: "user", Name: name, Tier: store.TierPublic, Value: "x"}); err == nil {
+			t.Fatalf("%s: replaced by a public value", name)
+		}
+	}
+	list, err := c.List("user")
+	must(t, err)
+	for _, in := range list {
+		if in.Value != "" {
+			t.Fatalf("list shows a private value: %+v", in)
+		}
+	}
+	// A public value has no binding, kind or default.
+	if err := c.Set(SetRequest{Project: "user", Name: "X", Tier: store.TierPublic, Value: "v", Default: true}); err == nil {
+		t.Fatal("public default accepted")
+	}
+}
+
 func TestOtherUserIsRefused(t *testing.T) {
 	if os.Getuid() == 0 {
 		t.Skip("root is always allowed")

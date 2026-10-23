@@ -182,24 +182,71 @@ func newRecorder(t *testing.T, reply func(r *http.Request) string) *recorder {
 
 func (r *recorder) host() string { return strings.TrimPrefix(r.srv.URL, "http://") }
 
-// multiHost serves one secret bound to two plain-HTTP upstreams.
-func multiHost(t *testing.T, b store.Binding, a, c *recorder) *httptest.Server {
+// multiHost serves user/GITHUB_TOKEN and client/GITHUB_TOKEN, both bound to
+// two plain-HTTP upstreams, with the public value user/GITHUB_USERNAME.
+func multiHost(t *testing.T, b store.Binding, a, c *recorder) (*httptest.Server, *store.Store) {
 	t.Helper()
 	dir := t.TempDir()
 	key, _ := store.NewKey()
 	s, _ := store.Open(dir, key)
 	b.Host, b.ExtraHosts = a.host(), []string{c.host()}
 	must(t, s.Create(store.Secret{Project: "user", Name: "GITHUB_TOKEN", Tier: store.TierProxy, Value: "tok-123", Binding: &b}, time.Now()))
+	must(t, s.Create(store.Secret{Project: "client", Name: "GITHUB_TOKEN", Tier: store.TierProxy, Value: "tok-client", Binding: &b}, time.Now()))
+	must(t, s.SetPublic("user", "GITHUB_USERNAME", "blackstonecan", time.Now()))
 	st, _ := state.Load(dir)
 	p := httptest.NewServer(&Proxy{Store: s, State: st, Audit: state.NewAudit(dir), Scheme: "http"})
 	t.Cleanup(p.Close)
-	return p
+	return p, s
+}
+
+func basicOf(user, token string) string {
+	return "Basic " + base64.StdEncoding.EncodeToString([]byte(user+":"+token))
+}
+
+// The Basic username is a public value: the secret's project first, then the
+// user scope, read at each request.
+func TestBasicUsernameFromPublicValue(t *testing.T) {
+	api := newRecorder(t, func(*http.Request) string { return "ok" })
+	git := newRecorder(t, func(*http.Request) string { return "ok" })
+	p, s := multiHost(t, store.Binding{Header: "Authorization", Basic: "GITHUB_USERNAME"}, api, git)
+
+	get(t, p.URL+"/client/GITHUB_TOKEN/x", nil)
+	if api.auth != basicOf("blackstonecan", "tok-client") {
+		t.Fatalf("client without its own username: %q", api.auth)
+	}
+	must(t, s.SetPublic("client", "GITHUB_USERNAME", "client-bot", time.Now()))
+	get(t, p.URL+"/client/GITHUB_TOKEN/x", nil)
+	if api.auth != basicOf("client-bot", "tok-client") {
+		t.Fatalf("client with its own username: %q", api.auth)
+	}
+	// The user's token still uses the user's username, and a change applies at once.
+	must(t, s.SetPublic("user", "GITHUB_USERNAME", "renamed", time.Now()))
+	get(t, p.URL+"/user/GITHUB_TOKEN/x", nil)
+	if api.auth != basicOf("renamed", "tok-123") {
+		t.Fatalf("user token: %q", api.auth)
+	}
+}
+
+func TestBasicUsernameMissing(t *testing.T) {
+	api := newRecorder(t, func(*http.Request) string { return "ok" })
+	git := newRecorder(t, func(*http.Request) string { return "ok" })
+	p, s := multiHost(t, store.Binding{Header: "Authorization", Basic: "OTHER_NAME"}, api, git)
+	resp, body := get(t, p.URL+"/user/GITHUB_TOKEN/x", nil)
+	if resp.StatusCode != http.StatusInternalServerError || !strings.Contains(body, "basic username OTHER_NAME") || api.path != "" {
+		t.Fatalf("missing username: %d %q (upstream path %q)", resp.StatusCode, body, api.path)
+	}
+	// A private secret is never used as the username.
+	must(t, s.Create(store.Secret{Project: "user", Name: "OTHER_NAME", Tier: store.TierRun, Kind: store.KindEnv, Value: "private-v"}, time.Now()))
+	resp, body = get(t, p.URL+"/user/GITHUB_TOKEN/x", nil)
+	if resp.StatusCode != http.StatusInternalServerError || strings.Contains(body, "private-v") || api.path != "" {
+		t.Fatalf("private username: %d %q", resp.StatusCode, body)
+	}
 }
 
 func TestMultiHostRouting(t *testing.T) {
 	api := newRecorder(t, func(*http.Request) string { return "api" })
 	git := newRecorder(t, func(*http.Request) string { return "git" })
-	p := multiHost(t, store.Binding{Header: "Authorization", Format: "Bearer {}"}, api, git)
+	p, _ := multiHost(t, store.Binding{Header: "Authorization", Format: "Bearer {}"}, api, git)
 
 	if _, body := get(t, p.URL+"/user/GITHUB_TOKEN/repos/o/r", nil); body != "api" || api.path != "/repos/o/r" {
 		t.Fatalf("default host: body %q path %q", body, api.path)
@@ -234,7 +281,7 @@ func TestBasicAuthAndMasking(t *testing.T) {
 	echo := func(r *http.Request) string { return "auth=" + r.Header.Get("Authorization") + " raw=tok-123" }
 	api := newRecorder(t, echo)
 	git := newRecorder(t, echo)
-	p := multiHost(t, store.Binding{Header: "Authorization", Basic: "blackstonecan"}, api, git)
+	p, _ := multiHost(t, store.Binding{Header: "Authorization", Basic: "GITHUB_USERNAME"}, api, git)
 
 	_, body := get(t, p.URL+"/user/GITHUB_TOKEN/"+git.host()+"/o/r.git/info/refs", map[string]string{"Authorization": "placeholder"})
 	want := "Basic " + base64.StdEncoding.EncodeToString([]byte("blackstonecan:tok-123"))
@@ -250,7 +297,7 @@ func TestBasicAuthAndMasking(t *testing.T) {
 func TestCompressedRequestBody(t *testing.T) {
 	api := newRecorder(t, func(*http.Request) string { return "ok" })
 	git := newRecorder(t, func(*http.Request) string { return "ok" })
-	p := multiHost(t, store.Binding{Header: "Authorization", Basic: "blackstonecan"}, api, git)
+	p, _ := multiHost(t, store.Binding{Header: "Authorization", Basic: "GITHUB_USERNAME"}, api, git)
 
 	var buf bytes.Buffer
 	gz := gzip.NewWriter(&buf)

@@ -26,6 +26,16 @@ func TestFallback(t *testing.T) {
 	}
 }
 
+func TestPublicEntry(t *testing.T) {
+	m, err := Load(write(t, "project: demo\nsecrets:\n  GITHUB_USERNAME:\n    tier: public\n  ORG:\n    tier: public\n    var: GITHUB_ORG\n"))
+	if err != nil || m.Secrets["GITHUB_USERNAME"].Tier != "public" || m.Secrets["ORG"].Var != "GITHUB_ORG" {
+		t.Fatalf("public entries: %+v %v", m, err)
+	}
+	if _, err := Load(write(t, "project: demo\nsecrets:\n  X:\n    tier: public\n    env:\n      A: b\n")); err == nil || !strings.Contains(err.Error(), "a public entry has var, not env") {
+		t.Fatalf("public with env: %v", err)
+	}
+}
+
 func TestFallbackErrors(t *testing.T) {
 	for body, want := range map[string]string{
 		"project: demo\nsecrets:\n  NPM_TOKEN:\n    tier: run\n    fallback: team\n": `fallback must be "user"`,

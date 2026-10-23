@@ -25,13 +25,14 @@ secretd  (system user devsecrets, systemd service)
 root (sudo secret reveal / rotate / rm / bind / export) reads the store directly.
 ```
 
-### Three tiers
+### Tiers
 
 | Tier | For | The app gets | Can an agent see the value? |
 |---|---|---|---|
 | **proxy** | HTTP API keys | a local base URL + a placeholder key | **No** |
 | **run** | values the app must hold (DB password, JWT key, a JSON key file) | env var, or a temp file in `$XDG_RUNTIME_DIR` (RAM), removed at exit | In theory yes (same user). **Use dev-only values.** |
-| plain `.env` | config that is not secret (ports, URLs) | the normal `.env` | Yes, and that is fine |
+| **public** | values that are not secret but shared, often with secrets (a username, an org) | env var; project value, else the user's | Yes, by design (`secret get`) |
+| plain `.env` | config of one project that is not secret (ports, URLs) | the normal `.env` | Yes, and that is fine |
 
 The **store** decides the tier and the binding of each secret. A changed
 `secrets.yaml` cannot turn a proxy secret into a run secret or send it to
@@ -151,39 +152,6 @@ then a missing project secret is an error again.
 Turning a default on or off for an existing secret is root-only, like
 `bind`; `secret set --user --default` can only make a new one.
 
-### Several hosts, and git over HTTPS
-
-One secret can go to several hosts (up to 8, HTTPS only), so one GitHub token
-serves the API and git:
-
-```bash
-/usr/bin/sudo secret bind user/GITHUB_TOKEN --host api.github.com,github.com --header Authorization --basic
-```
-
-- The first host is the default: `/user/GITHUB_TOKEN/<path>` goes to
-  `https://api.github.com/<path>`. A first path segment that is exactly one of
-  the bound hosts picks that host: `/user/GITHUB_TOKEN/github.com/<path>` goes
-  to `https://github.com/<path>`. A host that is not bound is never reached.
-  In a manifest: `"{proxy}/github.com"`.
-- `--basic` sends `Authorization: Basic base64(USER:token)`, which git over
-  HTTPS needs (GitHub's API accepts it too). USER is `basic_user` from
-  `/etc/secretd/config.json`, set with
-  `sudo bash install/setup.sh --basic-user NAME` (kept on updates);
-  `--basic-user NAME` overrides it for one binding. The username is stored in
-  the binding, so changing the default later changes no existing secret.
-- The proxy masks the base64 form in responses as well as the raw value.
-
-Push through the proxy (no token in git). A public repo can keep fetching
-from the normal URL; a private repo fetches through the proxy too:
-
-```bash
-git remote set-url --push origin http://127.0.0.1:7777/user/GITHUB_TOKEN/github.com/OWNER/REPO.git   # push only
-git remote set-url origin http://127.0.0.1:7777/user/GITHUB_TOKEN/github.com/OWNER/REPO.git          # private: fetch too
-```
-
-A repo for another account points its push URL at its project's own secret
-(`/<project>/GITHUB_TOKEN/github.com/...`), bound the same way.
-
 - Nothing is copied or overwritten: the fallback is a lookup at `secret run`
   time. The user value changes only with `sudo secret rotate user/NAME`.
 - Only a *missing* project secret falls back. A project secret with the wrong
@@ -197,6 +165,64 @@ A repo for another account points its push URL at its project's own secret
   and on the proxy; projects' own secrets keep working.
 - Outside projects: `secret init --user` makes `~/.config/secretd/user.yaml`
   (`project: user`); list secrets there and use `secret run --user -- CMD`.
+
+### Public values
+
+Some values belong with secrets but are not secret: a username, an org, an
+account ID. Store them as **public** values, in a project or the user scope:
+
+```bash
+secret set GITHUB_USERNAME blackstonecan --user --public   # the value may be on the command line
+secret get GITHUB_USERNAME                                 # this project's value, else the user's
+secret list --all                                          # shows public values: "= blackstonecan"
+```
+
+- Anyone can read them (`get`, `list`), and you can change them without sudo:
+  run the same `set` again. Changes are in the audit log.
+- A project uses its own value, else the user's: always, with no `fallback`
+  line and regardless of `secret lock user`. `fallback: none` opts out.
+- An app gets one as an env var through `secret run`: list it in
+  `secrets.yaml` as `GITHUB_USERNAME: { tier: public }` (`var:` renames it).
+- A name is either private or public. A public value never replaces a private
+  secret, `get` never prints a private one, a manifest that says `tier: public`
+  for a private secret gets a tier error (never the value), and `bind` never
+  converts between the two.
+- Public values never go through the proxy; bindings refer to them by name
+  (`--basic NAME`, below).
+
+### Several hosts, and git over HTTPS
+
+One secret can go to several hosts (up to 8, HTTPS only), so one GitHub token
+serves the API and git:
+
+```bash
+secret set GITHUB_USERNAME blackstonecan --user --public
+/usr/bin/sudo secret bind user/GITHUB_TOKEN --host api.github.com,github.com --header Authorization --basic GITHUB_USERNAME
+```
+
+- The first host is the default: `/user/GITHUB_TOKEN/<path>` goes to
+  `https://api.github.com/<path>`. A first path segment that is exactly one of
+  the bound hosts picks that host: `/user/GITHUB_TOKEN/github.com/<path>` goes
+  to `https://github.com/<path>`. A host that is not bound is never reached.
+  In a manifest: `"{proxy}/github.com"`.
+- `--basic NAME` sends `Authorization: Basic base64(USER:token)`, which git
+  over HTTPS needs (GitHub's API accepts it too). USER is the public value
+  NAME, read at each request: the secret's project first, then the user scope.
+  So `client/GITHUB_TOKEN` uses `client/GITHUB_USERNAME` when the project has
+  one, and changing the value takes effect at once. A missing value fails the
+  request before anything is sent.
+- The proxy masks the base64 form in responses as well as the raw value.
+
+Push through the proxy (no token in git). A public repo can keep fetching
+from the normal URL; a private repo fetches through the proxy too:
+
+```bash
+git remote set-url --push origin http://127.0.0.1:7777/user/GITHUB_TOKEN/github.com/OWNER/REPO.git   # push only
+git remote set-url origin http://127.0.0.1:7777/user/GITHUB_TOKEN/github.com/OWNER/REPO.git          # private: fetch too
+```
+
+A repo for another account points its push URL at its project's own secret
+(`/<project>/GITHUB_TOKEN/github.com/...`), bound the same way.
 
 ### Root commands (your own terminal, never inside an agent session)
 

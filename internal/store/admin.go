@@ -1,6 +1,9 @@
 package store
 
-import "time"
+import (
+	"fmt"
+	"time"
+)
 
 // The operations below change existing secrets. The daemon API does not offer
 // them: only root (through `sudo secret ...`) can open the store file.
@@ -28,6 +31,11 @@ func (s *Store) Rebind(project, name string, tier Tier, kind Kind, b *Binding, n
 		sec, ok := m[project+"/"+name]
 		if !ok {
 			return ErrNotFound
+		}
+		// A value never moves between private and public: that would publish
+		// a secret, or hand a public value to the proxy.
+		if sec.Tier == TierPublic || tier == TierPublic {
+			return fmt.Errorf("%s: public and private do not convert; remove it and add it again", sec.Key())
 		}
 		c := *sec
 		c.Tier, c.Kind, c.Binding, c.UpdatedAt = tier, kind, b, now

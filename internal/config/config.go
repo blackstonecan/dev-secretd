@@ -6,21 +6,16 @@ import (
 	"fmt"
 	"net"
 	"os"
-	"regexp"
 )
 
 const DefaultPath = "/etc/secretd/config.json"
 
-// The same rule as the username of a store.Binding.Basic.
-var basicUserRe = regexp.MustCompile(`^[A-Za-z0-9._-]{1,64}$`)
-
 type Config struct {
-	Socket     string `json:"socket"`               // Unix socket of the API
-	ProxyAddr  string `json:"proxy_addr"`           // loopback address of the proxy
-	StateDir   string `json:"state_dir"`            // store, state and audit log
-	MasterCred string `json:"master_cred"`          // systemd-creds file with the master key
-	AllowUID   int    `json:"allow_uid"`            // the one user that may use the API
-	BasicUser  string `json:"basic_user,omitempty"` // default username of `--basic` bindings
+	Socket     string `json:"socket"`      // Unix socket of the API
+	ProxyAddr  string `json:"proxy_addr"`  // loopback address of the proxy
+	StateDir   string `json:"state_dir"`   // store, state and audit log
+	MasterCred string `json:"master_cred"` // systemd-creds file with the master key
+	AllowUID   int    `json:"allow_uid"`   // the one user that may use the API
 }
 
 func Default() Config {
@@ -65,9 +60,6 @@ func (c Config) Validate() error {
 	}
 	if c.Socket == "" || c.StateDir == "" {
 		return fmt.Errorf("socket and state_dir are required")
-	}
-	if c.BasicUser != "" && !basicUserRe.MatchString(c.BasicUser) {
-		return fmt.Errorf("basic_user: invalid username %q", c.BasicUser)
 	}
 	return nil
 }

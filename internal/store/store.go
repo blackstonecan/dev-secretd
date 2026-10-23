@@ -33,7 +33,14 @@ const (
 	// TierRun secrets go into the environment (or a temporary file) of a
 	// process that `secret run` starts. Use dev-only values for them.
 	TierRun Tier = "run"
+	// TierPublic values are not secret: anyone may read them, the user may
+	// change them, and a project without its own falls back to the user's.
+	// They name things (a username, an org) and never go through the proxy.
+	TierPublic Tier = "public"
 )
+
+// MaxPublicLen is the longest public value.
+const MaxPublicLen = 4096
 
 // Kind says how a run-tier value reaches the process.
 type Kind string
@@ -51,8 +58,10 @@ type Binding struct {
 	ExtraHosts []string `json:"extra_hosts,omitempty"`
 	Header     string   `json:"header,omitempty"` // header name, for example x-api-key
 	Format     string   `json:"format,omitempty"` // header value template, "{}" is the secret; default "{}"
-	// Basic auth username: the header value is "Basic base64(<Basic>:<secret>)".
-	// Instead of Format; git over HTTPS needs it.
+	// Basic auth: the name of a public value that holds the username, looked
+	// up in the secret's project and then the user scope at each request. The
+	// header value is "Basic base64(<username>:<secret>)". Instead of Format;
+	// git over HTTPS needs it.
 	Basic string `json:"basic,omitempty"`
 	Query string `json:"query,omitempty"` // query parameter name, instead of a header
 }
@@ -63,10 +72,11 @@ const MaxHosts = 8
 // Hosts returns the default host and then the extra hosts.
 func (b *Binding) Hosts() []string { return append([]string{b.Host}, b.ExtraHosts...) }
 
-// HeaderValue is the header value that carries the secret.
-func (b *Binding) HeaderValue(value string) string {
+// HeaderValue is the header value that carries the secret. username is the
+// resolved public value named by Basic (unused without Basic).
+func (b *Binding) HeaderValue(value, username string) string {
 	if b.Basic != "" {
-		return "Basic " + base64.StdEncoding.EncodeToString([]byte(b.Basic+":"+value))
+		return "Basic " + base64.StdEncoding.EncodeToString([]byte(username+":"+value))
 	}
 	format := b.Format
 	if format == "" {
@@ -113,7 +123,6 @@ var (
 	hostRe    = regexp.MustCompile(`^[a-zA-Z0-9.-]+(:[0-9]{1,5})?$`)
 	headerRe  = regexp.MustCompile(`^[A-Za-z0-9-]{1,64}$`)
 	queryRe   = regexp.MustCompile(`^[A-Za-z0-9_.-]{1,64}$`)
-	basicRe   = regexp.MustCompile(`^[A-Za-z0-9._-]{1,64}$`)
 )
 
 // UserProject is the user scope: secrets that any project may fall back to
@@ -170,8 +179,8 @@ func (s *Secret) Validate() error {
 			if b.Header == "" || b.Format != "" {
 				return errors.New("--basic needs --header and no --format")
 			}
-			if !basicRe.MatchString(b.Basic) {
-				return fmt.Errorf("invalid --basic username %q", b.Basic)
+			if !ValidName(b.Basic) {
+				return fmt.Errorf("--basic names a public value (UPPER_SNAKE_CASE), got %q", b.Basic)
 			}
 		}
 		if (b.Header == "") == (b.Query == "") {
@@ -193,10 +202,37 @@ func (s *Secret) Validate() error {
 		if s.Kind != KindEnv && s.Kind != KindFile {
 			return errors.New("a run-tier secret needs kind env or file")
 		}
+	case TierPublic:
+		if s.Binding != nil || s.Kind != "" {
+			return errors.New("a public value has no binding and no kind")
+		}
+		if s.Default {
+			return errors.New("public values always fall back to the user scope; they are not a default")
+		}
+		if len(s.Value) > MaxPublicLen {
+			return fmt.Errorf("a public value has at most %d bytes", MaxPublicLen)
+		}
 	default:
-		return fmt.Errorf("invalid tier %q (proxy or run)", s.Tier)
+		return fmt.Errorf("invalid tier %q (proxy, run or public)", s.Tier)
 	}
 	return nil
+}
+
+// ResolvePublic returns the public value NAME of a project, or of the user
+// scope when the project has none. A private secret of that name is an error
+// (and its value is never returned).
+func (s *Store) ResolvePublic(project, name string) (*Secret, error) {
+	sec, err := s.Get(project, name)
+	if errors.Is(err, ErrNotFound) && project != UserProject {
+		sec, err = s.Get(UserProject, name)
+	}
+	if err != nil {
+		return nil, err
+	}
+	if sec.Tier != TierPublic {
+		return nil, fmt.Errorf("%s is a private secret, not a public value", sec.Key())
+	}
+	return sec, nil
 }
 
 func countPlaceholders(s string) int {
@@ -299,6 +335,25 @@ func (s *Store) Create(sec Secret, now time.Time) error {
 	return s.Update(func(m map[string]*Secret) error {
 		if _, ok := m[sec.Key()]; ok {
 			return ErrExists
+		}
+		m[sec.Key()] = &sec
+		return nil
+	})
+}
+
+// SetPublic creates a public value or changes an existing one. It never
+// touches a private secret of the same name.
+func (s *Store) SetPublic(project, name, value string, now time.Time) error {
+	sec := Secret{Project: project, Name: name, Tier: TierPublic, Value: value, CreatedAt: now, UpdatedAt: now}
+	if err := sec.Validate(); err != nil {
+		return err
+	}
+	return s.Update(func(m map[string]*Secret) error {
+		if old, ok := m[sec.Key()]; ok {
+			if old.Tier != TierPublic {
+				return fmt.Errorf("%s is a private secret: a name is either private or public", sec.Key())
+			}
+			sec.CreatedAt = old.CreatedAt
 		}
 		m[sec.Key()] = &sec
 		return nil

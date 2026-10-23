@@ -23,6 +23,8 @@ machine at `~/sandbox/projects/secretd` (README.md). The installed command is
   not print the environment of `secret run`, do not dump the temp files of
   file secrets, do not read `/var/lib/secretd` or `/etc/secretd`.
 - If a task cannot be done without seeing a value, stop and say so.
+- **Never store anything secret as `--public`**: public values are readable
+  by anyone. A token, password or key is always private (proxy or run).
 
 ## Tiers: pick the right one
 
@@ -30,9 +32,25 @@ machine at `~/sandbox/projects/secretd` (README.md). The installed command is
 |---|---|---|---|
 | **proxy** (prefer) | HTTP API keys and tokens | `http://127.0.0.1:7777/<project>/<NAME>` + a placeholder key | No |
 | **run** | values the app must hold: DB password, JWT signing key, JSON key file | env var, or a temp file path (file secrets) | In theory yes. **Dev-only values only.** |
-| plain `.env` | config that is not secret: ports, URLs, flags | normal `.env` | Yes, fine |
+| **public** | not secret, but shared or used by bindings: a username, an org | env var; the project's value, else the user's | Yes, by design |
+| plain `.env` | config of one project that is not secret: ports, URLs, flags | normal `.env` | Yes, fine |
 
 The store decides the tier and the binding. `secrets.yaml` cannot change them.
+
+## Public values
+
+Agents may read and set these (no sudo; the value can be on the command line):
+
+```bash
+secret get GITHUB_USERNAME                        # this project's value, else the user's
+secret set GITHUB_USERNAME blackstonecan --user --public
+secret set GITHUB_USERNAME client-bot --public    # this project only; wins over the user's
+```
+
+In `secrets.yaml`: `GITHUB_USERNAME: { tier: public }` (add `var: X` to rename
+the env var). A project always falls back to the user's value; no `fallback`
+line is needed. Change a user-scope public value only when the user asks: it
+applies to every project at once.
 
 ## Add a secret: the user does it, in their own terminal
 
@@ -142,8 +160,10 @@ unless the user asked for a change.
 ## `git push` through secretd
 
 A secret can be bound to several hosts (`secret list` shows them,
-comma-separated). When `github.com` is one of them, with `basic` auth, git
-pushes through the proxy: the first path segment picks the host.
+comma-separated). When `github.com` is one of them, with `basic user=NAME`,
+git pushes through the proxy: the first path segment picks the host, and the
+username is the public value NAME (the secret's project first, then the
+user's; `secret get NAME` shows it).
 
 ```bash
 git remote get-url --push origin     # already set up if it starts with http://127.0.0.1:7777/
@@ -159,7 +179,11 @@ same way (`git remote set-url origin <proxy URL>`).
   (`/<project>/GITHUB_TOKEN/github.com/...`); if that does not exist, stop and
   ask.
 - If no secret is bound to `github.com`, the user binds one in their own
-  terminal: `/usr/bin/sudo secret bind user/GITHUB_TOKEN --host api.github.com,github.com --header Authorization --basic`.
+  terminal: `/usr/bin/sudo secret bind user/GITHUB_TOKEN --host api.github.com,github.com --header Authorization --basic GITHUB_USERNAME`
+  (with `secret set GITHUB_USERNAME <name> --user --public` first).
+- A push for a client repo that fails with `basic username GITHUB_USERNAME`
+  needs that project's username: ask the user, then
+  `secret set GITHUB_USERNAME <name> --project <project> --public`.
 - `gh` cannot use the proxy. For anything a push URL cannot do, ask the user.
   Never read token files, `~/.git-credentials`, keyrings or `gh auth token`,
   and never ask for the token in the chat.
