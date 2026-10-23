@@ -105,16 +105,7 @@ func cmdGit(args []string) error {
 		return gitOff(local, proxyPrefix)
 	}
 
-	m, err := manifest.Find(".")
-	if errors.Is(err, os.ErrNotExist) {
-		return usageError{"no secrets.yaml here: run `secret init --project NAME` first"}
-	}
-	if err != nil {
-		return err
-	}
-	if m.Project == store.UserProject {
-		return usageError{"`secret git` is for a project; your own repos use the global rule"}
-	}
+	// The repo's owner first: your own repos need nothing, not even a project.
 	// The raw URL: `git remote get-url` would show it already rewritten.
 	rawURL, err := gitOutput("config", "--get", "remote."+*remote+".url")
 	if err != nil {
@@ -133,9 +124,20 @@ func cmdGit(args []string) error {
 	}
 	for _, r := range global {
 		if strings.EqualFold(r.insteadOf, from) {
-			return fmt.Errorf("%s is covered by your global rule (%s), so it is your own account; "+
+			return fmt.Errorf("%s is covered by your global rule (%s), so it is your own account and needs nothing; "+
 				"`secret git` is for a customer's repo", from, r.base)
 		}
+	}
+
+	m, err := manifest.Find(".")
+	if errors.Is(err, os.ErrNotExist) {
+		return usageError{"no secrets.yaml here: run `secret init --project NAME` first"}
+	}
+	if err != nil {
+		return err
+	}
+	if m.Project == store.UserProject {
+		return usageError{"`secret git` is for a project; your own repos use the global rule"}
 	}
 
 	if err := checkGitToken(m.Project, *name); err != nil {

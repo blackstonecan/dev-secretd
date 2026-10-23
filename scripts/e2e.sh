@@ -184,7 +184,7 @@ check "git: other owner untouched" "https://github.com/other/lib.git" "$(git rem
 check "git: off"                "removed rule https://github.com/acme/" "$("$secret" git --off)"
 check "git: origin back"        "https://github.com/acme/app.git" "$(git remote get-url origin)"
 check "git: off when none"      "no secretd rule"         "$("$secret" git --off)"
-cd "$work/mine" && git init -q && git remote add origin https://github.com/mine/repo.git && "$secret" init --project mine >/dev/null
+cd "$work/mine" && git init -q && git remote add origin https://github.com/mine/repo.git   # no secrets.yaml: own repos need none
 check "git: own account refused" "covered by your global rule" "$("$secret" git --no-check 2>&1 || true)"
 cd "$work/sshrepo" && git init -q && git remote add origin git@github.com:acme/app.git && "$secret" init --project sshrepo >/dev/null
 check "git: SSH remote refused" "uses SSH"                "$("$secret" git --no-check 2>&1 || true)"
