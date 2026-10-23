@@ -175,14 +175,27 @@ does not matter to GitHub). The URL is plumbing: never write it into a
 remote by hand when a rule covers the repo.
 
 - **A customer's repo** (another account) never uses the user's token. It
-  uses the project's own `GITHUB_TOKEN` through a rule in that repo only: run
-  `secret git` in the repo (it reads the owner from `origin`, checks the
-  token, writes an owner-scoped rule to `.git/config` and checks access).
-  If it says the project has no `GITHUB_TOKEN`, stop and ask the user to add
-  the customer's token in their own terminal:
-  `secret set GITHUB_TOKEN --host api.github.com,github.com --header Authorization --basic`.
-  If its access check fails, report the message; do not retry with another
-  token. Never add a global rule for an owner the user did not ask for.
+  uses the project's own `GITHUB_TOKEN` through a rule in that repo only.
+  Set it up once per repo:
+
+  ```bash
+  cd <customer repo>
+  secret init --project <name>      # agent may run it; only if there is no secrets.yaml
+  # the user, in their own terminal (the customer's token, typed hidden):
+  secret set GITHUB_TOKEN --host api.github.com,github.com --header Authorization --basic
+  secret git                        # agent may run it: adds the rule, checks access
+  ```
+
+  Then add `fallback: none` to the project's `GITHUB_TOKEN` entry in
+  `secrets.yaml` (if the project lists it), so its apps never get the user's
+  default token. `secret git` reads the owner from `origin`, refuses the
+  user's own account and SSH remotes, writes an owner-scoped rule to
+  `.git/config` and runs a read-only `git ls-remote`. Several repos of one
+  customer can share one project: run `secret git` in each.
+  If it says the project has no `GITHUB_TOKEN`, stop and give the user the
+  `secret set` line above. If its access check fails, report the message; do
+  not retry with another token. Never add a global rule for an owner the user
+  did not ask for.
 - If a push asks for a username or password, no rule covers the repo: stop
   and ask; do not type credentials.
 - If no secret is bound to `github.com`, the user binds one in their own

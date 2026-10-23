@@ -45,7 +45,7 @@ User commands:
   secret import FILE [--keep K1,K2] [--yes]
                                           move values from a .env file into secretd
   secret lock [P] | secret unlock [P]     block or allow use of a project
-                                          ("user" blocks every use of user-scope secrets)
+                                          ("user" blocks user-scope secrets; public values stay usable)
   secret git [--secret NAME] [--remote R] [--no-check]
                                           a customer's repo: route https://github.com/OWNER/ in
                                           this repo through this project's own GITHUB_TOKEN,
@@ -63,6 +63,27 @@ Root commands (run with: /usr/bin/sudo secret ...):
                        make a user-scope secret a default for all projects, or not
   export --recipient AGE_PUBLIC_KEY --out FILE
                        encrypted backup of all secrets (decrypt with age)
+
+Common workflows:
+  A project with an API key (the app gets a local URL, never the key):
+    secret init --project my-app
+    secret set ANTHROPIC_API_KEY --host api.anthropic.com --header x-api-key
+    (add it to secrets.yaml with env: ANTHROPIC_BASE_URL: "{proxy}")
+    secret run -- pnpm dev
+
+  Your GitHub token for every project and all your repos:
+    secret set GITHUB_TOKEN --user --default --host api.github.com,github.com --header Authorization --basic
+    git config --global url."http://127.0.0.1:7777/user/GITHUB_TOKEN/github.com/YOU/".insteadOf "https://github.com/YOU/"
+
+  A customer's repo, with the customer's token:
+    cd customer-repo
+    secret init --project customer           # if there is no secrets.yaml
+    secret set GITHUB_TOKEN --host api.github.com,github.com --header Authorization --basic
+    secret git                               # then: git push / git pull as usual
+
+  A value that is not secret (readable by anyone):
+    secret set GITHUB_USERNAME you --user --public
+    secret get GITHUB_USERNAME
 `
 
 func main() {
