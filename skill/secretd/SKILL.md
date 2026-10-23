@@ -15,7 +15,8 @@ machine at `~/sandbox/projects/secretd` (README.md). The installed command is
 ## Hard rules
 
 - **Never ask the user to paste a secret value into the chat**, and never put
-  a value in a file, a command line, a log, an issue or a commit. A value in
+  a secret value in a file, a command line, a log, an issue or a commit
+  (public values are not secret and may be on the command line). A value in
   the chat goes into the model context and the session transcript.
 - **Never run `sudo`**, and never run `secret reveal`, `rotate`, `rm`, `bind`
   or `export`. They are for the user, in the user's own terminal.
@@ -95,7 +96,8 @@ secret set GITHUB_TOKEN --user --host api.github.com --header Authorization --fo
   in the project shows `default`, `fallback` or `overridden by <project>`.
 - Outside any project: `secret init --user` (makes
   `~/.config/secretd/user.yaml`), then `secret run --user -- CMD`.
-- `secret lock user` stops every use of user-scope secrets; do not unlock it
+- `secret lock user` stops every use of user-scope secrets (public values
+  stay usable); do not unlock it
   unless the user asks.
 
 ## Connect an app
@@ -174,8 +176,8 @@ remote by hand when a rule covers the repo.
 
 - **Another account's repo** (a client, a teammate) never uses the user's
   token. It needs its own project secret and a rule in that repo only:
-  `git config url."http://127.0.0.1:7777/<project>/GITHUB_TOKEN/github.com/".insteadOf "https://github.com/"`
-  (local config; the longest matching rule wins). If the project has no
+  `git config url."http://127.0.0.1:7777/<project>/GITHUB_TOKEN/github.com/<owner>/".insteadOf "https://github.com/<owner>/"`
+  (local config, scoped to that owner; the longest matching rule wins). If the project has no
   `GITHUB_TOKEN`, stop and ask the user to add it with
   `secret set GITHUB_TOKEN --host api.github.com,github.com --header Authorization --basic`
   in that project. Never add a global rule for an owner the user did not ask

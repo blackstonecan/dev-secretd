@@ -162,7 +162,8 @@ Turning a default on or off for an existing secret is root-only, like
   `secret list` in a project marks the user secrets it falls back to
   (`fallback`, or `overridden by <project>`).
 - `secret lock user` blocks every use of user-scope secrets, in every project
-  and on the proxy; projects' own secrets keep working.
+  and on the proxy; projects' own secrets keep working. Public values are not
+  secret and stay usable.
 - Outside projects: `secret init --user` makes `~/.config/secretd/user.yaml`
   (`project: user`); list secrets there and use `secret run --user -- CMD`.
 
@@ -236,11 +237,15 @@ account's token as its own project secret, and a rule in that repo only:
 cd ~/path/to/their-repo
 secret init --project client-app            # once, if the project has no secrets.yaml
 secret set GITHUB_TOKEN --host api.github.com,github.com --header Authorization --basic   # their token, typed hidden
-git config url."http://127.0.0.1:7777/client-app/GITHUB_TOKEN/github.com/".insteadOf "https://github.com/"
+git config url."http://127.0.0.1:7777/client-app/GITHUB_TOKEN/github.com/CLIENT/".insteadOf "https://github.com/CLIENT/"
 ```
 
-The rule is in that repo's `.git/config`, so it applies there only; git uses
-the longest matching rule, so your own repos keep the global one. Add
+The rule is in that repo's `.git/config`, so it applies there only, and only
+to the client's repos (`CLIENT` is their GitHub owner); another GitHub remote
+in that repo, and your own repos, are not affected. It is ordinary git
+config: it applies to you and to agents alike, and while secretd is stopped,
+pushes and pulls in that repo fail instead of asking for a password (undo
+with `git config --unset url.<proxy URL>.insteadOf`). Add
 `fallback: none` to the project's `GITHUB_TOKEN` entry in `secrets.yaml` so
 its apps never get your default token either.
 
