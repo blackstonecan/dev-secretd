@@ -165,9 +165,34 @@ printf '%s\n' 'project: pub' 'secrets:' '  NPM_TOKEN:' '    tier: public' > "$wo
 check "manifest cannot make private public" "the store says run" "$("$secret" run -- true 2>&1 || true)"
 check "bind refuses public"     "needs root"              "$("$secret" bind user/E2E_USERNAME --run 2>&1 || true)"
 
+# --- secret git (a customer's repo) ---
+# A throwaway global git config, so the user's real one is never read or changed.
+export GIT_CONFIG_GLOBAL="$work/gitconfig" GIT_CONFIG_NOSYSTEM=1
+git config --global url."http://127.0.0.1:$port/user/GITHUB_TOKEN/github.com/mine/".insteadOf "https://github.com/mine/"
+mkdir -p "$work/cust" "$work/mine" "$work/sshrepo" && cd "$work/cust"
+git init -q && git remote add origin https://github.com/acme/app.git && git remote add upstream https://github.com/other/lib.git
+check "git: needs secrets.yaml" "secret init --project" "$("$secret" git --no-check 2>&1 || true)"
+"$secret" init --project cust >/dev/null
+check "git: needs the project's token" "has no GITHUB_TOKEN of its own" "$("$secret" git --no-check 2>&1 || true)"
+printf 'x' | "$secret" set API_ONLY --host api.github.com --header Authorization --basic >/dev/null
+check "git: token must reach github.com" "not bound to github.com" "$("$secret" git --secret API_ONLY --no-check 2>&1 || true)"
+printf 'cust-tok' | "$secret" set GITHUB_TOKEN --host api.github.com,github.com --header Authorization --basic >/dev/null
+check "git: rule added"         "through cust/GITHUB_TOKEN" "$("$secret" git --no-check)"
+check "git: origin rewritten"   "http://127.0.0.1:$port/cust/GITHUB_TOKEN/github.com/acme/app.git" "$(git remote get-url --push origin)"
+check "git: other owner untouched" "https://github.com/other/lib.git" "$(git remote get-url upstream)"
+[[ -z "$(git config --global --get-regexp 'cust/GITHUB_TOKEN' || true)" ]] && ok "git: rule is local only" || fail "git: rule written to the global config"
+check "git: off"                "removed rule https://github.com/acme/" "$("$secret" git --off)"
+check "git: origin back"        "https://github.com/acme/app.git" "$(git remote get-url origin)"
+check "git: off when none"      "no secretd rule"         "$("$secret" git --off)"
+cd "$work/mine" && git init -q && git remote add origin https://github.com/mine/repo.git && "$secret" init --project mine >/dev/null
+check "git: own account refused" "covered by your global rule" "$("$secret" git --no-check 2>&1 || true)"
+cd "$work/sshrepo" && git init -q && git remote add origin git@github.com:acme/app.git && "$secret" init --project sshrepo >/dev/null
+check "git: SSH remote refused" "uses SSH"                "$("$secret" git --no-check 2>&1 || true)"
+unset GIT_CONFIG_GLOBAL GIT_CONFIG_NOSYSTEM
+
 # --- root and audit ---
 check "root commands need sudo" "needs root" "$("$secret" reveal demo/DB_PASSWORD 2>&1 || true)"
-if grep -q 'pw-123\|sk-fake\|sk_test_abc\|npm-user\|gh-user\|npm-fb\|ghd-user\|ghd-client\|git-tok' "$work/state/audit.log"; then fail "audit log has a value"; else ok "audit log has no values"; fi
+if grep -q 'pw-123\|sk-fake\|sk_test_abc\|npm-user\|gh-user\|npm-fb\|ghd-user\|ghd-client\|git-tok\|cust-tok' "$work/state/audit.log"; then fail "audit log has a value"; else ok "audit log has no values"; fi
 check "audit: fallback recorded" '"detail":"run from user"' "$(cat "$work/state/audit.log")"
 check "audit log written" '"op":"resolve"' "$(cat "$work/state/audit.log")"
 if grep -aq 'pw-123\|sk-fake' "$work/state/store.enc"; then fail "store file has plaintext"; else ok "store file is encrypted"; fi

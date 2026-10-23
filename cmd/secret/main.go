@@ -46,6 +46,11 @@ User commands:
                                           move values from a .env file into secretd
   secret lock [P] | secret unlock [P]     block or allow use of a project
                                           ("user" blocks every use of user-scope secrets)
+  secret git [--secret NAME] [--remote R] [--no-check]
+                                          a customer's repo: route https://github.com/OWNER/ in
+                                          this repo through this project's own GITHUB_TOKEN,
+                                          then check access (git ls-remote)
+  secret git --off                        remove this repo's secretd rules
   secret status
 
 Root commands (run with: /usr/bin/sudo secret ...):
@@ -72,6 +77,8 @@ func main() {
 		err = cmdInit(args)
 	case "set":
 		err = cmdSet(args)
+	case "git":
+		err = cmdGit(args)
 	case "get":
 		err = cmdGet(args)
 	case "list":

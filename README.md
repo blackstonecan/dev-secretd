@@ -228,31 +228,46 @@ Then `git push`, `git pull` and `git clone https://github.com/OWNER/...` go
 through secretd (pushes and private fetches alike). Repos of other owners do
 not match the rule and are never sent your token.
 
-#### Repos of another account
+#### Customer repos: `secret git`
 
-A repo that needs a different account (a client's, a teammate's) gets that
-account's token as its own project secret, and a rule in that repo only:
+A repo of another account (a customer's) uses that account's token, stored
+as the project's own secret, through a rule in that repo only:
 
 ```bash
-cd ~/path/to/their-repo
-secret init --project client-app            # once, if the project has no secrets.yaml
+cd ~/path/to/customer-repo
+secret init --project customer-app          # once, if the project has no secrets.yaml
 secret set GITHUB_TOKEN --host api.github.com,github.com --header Authorization --basic   # their token, typed hidden
-git config url."http://127.0.0.1:7777/client-app/GITHUB_TOKEN/github.com/CLIENT/".insteadOf "https://github.com/CLIENT/"
+secret git                                  # add the rule, then check access
 ```
 
-The rule is in that repo's `.git/config`, so it applies there only, and only
-to the client's repos (`CLIENT` is their GitHub owner); another GitHub remote
-in that repo, and your own repos, are not affected. It is ordinary git
-config: it applies to you and to agents alike, and while secretd is stopped,
-pushes and pulls in that repo fail instead of asking for a password (undo
-with `git config --unset url.<proxy URL>.insteadOf`). Add
-`fallback: none` to the project's `GITHUB_TOKEN` entry in `secrets.yaml` so
-its apps never get your default token either.
+`secret git` reads the owner from `origin` (an `https://github.com/OWNER/REPO`
+URL), checks that the project has its own `GITHUB_TOKEN` bound to
+`github.com` with Basic auth, and adds to that repo's `.git/config`:
 
-A repo where your own account is a collaborator (owned by another user) uses
-your token; add a global rule for that owner too. A fine-grained token only
-reaches repos of its owner (you or your organizations), so such a repo needs
-a token that can reach it.
+```
+[url "http://127.0.0.1:7777/customer-app/GITHUB_TOKEN/github.com/OWNER/"]
+    insteadOf = https://github.com/OWNER/
+```
+
+Then it checks access with a read-only `git ls-remote`.
+
+- The rule covers only that owner, in that repo: another GitHub remote there
+  and your own repos are unaffected. It refuses an owner your global rule
+  already covers (your own account) and SSH remotes.
+- It is ordinary git config: it applies to you and to agents alike. While
+  secretd is stopped, pushes and pulls in that repo fail instead of asking
+  for a password.
+- `secret git --off` removes the repo's secretd rules. `--secret NAME` uses
+  another project secret, `--remote R` another remote, `--no-check` skips the
+  access check.
+- Add `fallback: none` to the project's `GITHUB_TOKEN` entry in
+  `secrets.yaml`, so its apps never get your default token either.
+- If the check fails: the token must be able to reach the repo (a
+  fine-grained token reaches only repos of its owner) and its account must be
+  allowed to push there.
+- Pushing to another person's repo with your own account (as a collaborator)
+  is not covered: a fine-grained token cannot reach another user's personal
+  repos, so it would need a separate classic token.
 
 ### Root commands (your own terminal, never inside an agent session)
 

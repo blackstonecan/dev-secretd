@@ -174,14 +174,15 @@ which adds the token (bound to `github.com` with `basic` auth; the username
 does not matter to GitHub). The URL is plumbing: never write it into a
 remote by hand when a rule covers the repo.
 
-- **Another account's repo** (a client, a teammate) never uses the user's
-  token. It needs its own project secret and a rule in that repo only:
-  `git config url."http://127.0.0.1:7777/<project>/GITHUB_TOKEN/github.com/<owner>/".insteadOf "https://github.com/<owner>/"`
-  (local config, scoped to that owner; the longest matching rule wins). If the project has no
-  `GITHUB_TOKEN`, stop and ask the user to add it with
-  `secret set GITHUB_TOKEN --host api.github.com,github.com --header Authorization --basic`
-  in that project. Never add a global rule for an owner the user did not ask
-  for.
+- **A customer's repo** (another account) never uses the user's token. It
+  uses the project's own `GITHUB_TOKEN` through a rule in that repo only: run
+  `secret git` in the repo (it reads the owner from `origin`, checks the
+  token, writes an owner-scoped rule to `.git/config` and checks access).
+  If it says the project has no `GITHUB_TOKEN`, stop and ask the user to add
+  the customer's token in their own terminal:
+  `secret set GITHUB_TOKEN --host api.github.com,github.com --header Authorization --basic`.
+  If its access check fails, report the message; do not retry with another
+  token. Never add a global rule for an owner the user did not ask for.
 - If a push asks for a username or password, no rule covers the repo: stop
   and ask; do not type credentials.
 - If no secret is bound to `github.com`, the user binds one in their own
