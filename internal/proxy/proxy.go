@@ -28,6 +28,8 @@ type Proxy struct {
 	Transport http.RoundTripper // nil = http.DefaultTransport
 	// Scheme of the upstream. Always "https" outside tests.
 	Scheme string
+
+	tokens tokenCache // access tokens of OAuth bindings
 }
 
 // BaseURL is the URL that a client of project/name uses.
@@ -70,7 +72,7 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// Basic auth uses DefaultBasicUser, or the public value the binding names:
 	// the secret's project first, then the user scope.
 	username := store.DefaultBasicUser
-	if b.Basic != "" {
+	if b.Basic != "" && b.OAuth == nil {
 		u, err := p.Store.ResolvePublic(sec.Project, b.Basic)
 		if err != nil {
 			fail(http.StatusInternalServerError, fmt.Sprintf("basic username %s: %v (set it with `secret set %s VALUE --public`)", b.Basic, err, b.Basic))
@@ -86,18 +88,29 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	target := &url.URL{Scheme: scheme, Host: host}
 	status := 0
 	// The header value can hold the secret in another form (Basic auth is
-	// base64); mask that too.
-	masks := []string{sec.Value}
+	// base64); mask that too. An OAuth binding's access tokens are known only
+	// after the upstream call, so masks are read again for each response.
+	fixedMasks := []string{sec.Value}
 	headerValue := ""
-	if b.Header != "" {
+	if b.Header != "" && b.OAuth == nil {
 		headerValue = b.HeaderValue(sec.Value, username)
 		if !strings.Contains(headerValue, sec.Value) {
-			masks = append(masks, strings.TrimPrefix(headerValue, "Basic "))
+			fixedMasks = append(fixedMasks, strings.TrimPrefix(headerValue, "Basic "))
 		}
+	}
+	masks := func() []string {
+		if b.OAuth == nil {
+			return fixedMasks
+		}
+		return append(p.knownTokens(sec), fixedMasks...)
+	}
+	var transport http.RoundTripper = p.Transport
+	if b.OAuth != nil {
+		transport = &oauthTransport{p: p, sec: sec, base: p.Transport}
 	}
 
 	rp := &httputil.ReverseProxy{
-		Transport: p.Transport,
+		Transport: transport,
 		Rewrite: func(pr *httputil.ProxyRequest) {
 			pr.Out.URL.Scheme = target.Scheme
 			pr.Out.URL.Host = target.Host
@@ -113,10 +126,15 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			// Never forward the client's own credentials to the upstream.
 			pr.Out.Header.Del("Authorization")
 			pr.Out.Header.Del("Proxy-Authorization")
-			if b.Header != "" {
+			switch {
+			case b.OAuth != nil:
+				// The transport adds the access token. Keep the body, so the
+				// request can be sent again after a 401.
+				bufferBody(pr.Out)
+			case b.Header != "":
 				pr.Out.Header.Del(b.Header)
 				pr.Out.Header.Set(b.Header, headerValue)
-			} else {
+			default:
 				q := pr.Out.URL.Query()
 				q.Set(b.Query, sec.Value)
 				pr.Out.URL.RawQuery = q.Encode()
@@ -124,18 +142,31 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		},
 		ModifyResponse: func(resp *http.Response) error {
 			status = resp.StatusCode
+			values := masks()
 			for k, vs := range resp.Header {
 				for i, v := range vs {
-					resp.Header[k][i] = redact.String(v, masks...)
+					resp.Header[k][i] = redact.String(v, values...)
 				}
 			}
-			resp.Body = &redactBody{rc: resp.Body, values: masks}
+			// A 101 hands the raw connection to the client (WebSocket). The
+			// body must stay the connection, so the upgraded stream is copied
+			// as is: it is not masked.
+			if resp.StatusCode == http.StatusSwitchingProtocols {
+				return nil
+			}
+			resp.Body = &redactBody{rc: resp.Body, values: values}
 			resp.Header.Del("Content-Length")
 			resp.ContentLength = -1
 			return nil
 		},
 		ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
-			ev.Error = redact.String(err.Error(), masks...)
+			ev.Error = redact.String(err.Error(), masks()...)
+			if oe := asOAuthError(err); oe != nil {
+				status = oe.status
+				http.Error(w, "secretd: "+oe.msg, oe.status)
+				return
+			}
+			status = http.StatusBadGateway
 			http.Error(w, "secretd: upstream error", http.StatusBadGateway)
 		},
 		// Stream responses (SSE) at once.
@@ -144,7 +175,7 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	rp.ServeHTTP(w, r)
 
 	// The path only: a query parameter can hold the secret.
-	ev.Detail = fmt.Sprintf("%s %s %s %d", r.Method, host, redact.String(rest, masks...), status)
+	ev.Detail = fmt.Sprintf("%s %s %s %d", r.Method, host, redact.String(rest, masks()...), status)
 	p.Audit.Log(ev)
 }
 

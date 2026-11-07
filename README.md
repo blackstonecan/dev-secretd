@@ -269,6 +269,98 @@ Then it checks access with a read-only `git ls-remote`.
   is not covered: a fine-grained token cannot reach another user's personal
   repos, so it would need a separate classic token.
 
+### OAuth2 APIs: a refresh token that never leaves secretd
+
+Google and other OAuth2 APIs want a short-lived access token, made from a
+refresh token with the client id and the client secret. A refresh token
+opens the whole account, so it is a proxy secret with an **OAuth binding**:
+secretd calls the token endpoint itself, caches the access token until
+shortly before it expires, and adds `Authorization: Bearer <access>` to each
+request. On a 401 from the API it refreshes once and sends the request once
+more. The app sees neither the refresh token, the client secret nor the
+access token (the access token is masked in responses like other values).
+
+Three parts, all by name:
+
+```bash
+# the client id is not secret: a public value
+secret set GMAIL_OAUTH_CLIENT_ID 1234-abc.apps.googleusercontent.com --public
+# the client secret: a proxy secret bound to the token endpoint's host, so it
+# never leaves secretd either (Basic auth is how a token endpoint takes it)
+secret set GMAIL_OAUTH_CLIENT_SECRET --host oauth2.googleapis.com --header Authorization --basic-user GMAIL_OAUTH_CLIENT_ID
+# the refresh token: bound to the API hosts, with the token endpoint and the two names above
+secret set GMAIL_TOKEN --host gmail.googleapis.com,pubsub.googleapis.com \
+  --token-url https://oauth2.googleapis.com/token \
+  --client-id GMAIL_OAUTH_CLIENT_ID --client-secret GMAIL_OAUTH_CLIENT_SECRET
+```
+
+`secret set` reads the refresh token hidden, or from stdin, so a consent
+script can pipe it in. Better: let secretd run the consent, so the refresh
+token never passes through any process of your user:
+
+```bash
+secret oauth login GMAIL_TOKEN --google --host gmail.googleapis.com,pubsub.googleapis.com \
+  --client-id GMAIL_OAUTH_CLIENT_ID --client-secret GMAIL_OAUTH_CLIENT_SECRET \
+  --scope https://www.googleapis.com/auth/gmail.readonly,https://www.googleapis.com/auth/gmail.send,https://www.googleapis.com/auth/pubsub \
+  --account agent@example.com
+```
+
+`secret oauth login` opens the consent page (loopback redirect on
+127.0.0.1, PKCE; `--no-open` prints the link only), receives the code, and
+hands it to secretd, which exchanges it at the token endpoint and stores the
+refresh token. It stores nothing unless every `--scope` was granted and,
+with `--account`, the signed-in account is that one (checked through the
+`openid email` scopes, which are added for the check). A token that fails a
+check is revoked at `--revoke-url` (set by `--google`). `--google` fills the
+three Google endpoints and asks for a refresh token (`access_type=offline`,
+`prompt=consent`); other providers take `--auth-url`, `--token-url` and
+optionally `--revoke-url`.
+
+In `secrets.yaml` it is an ordinary proxy entry; the app sends requests
+without a token, with the API path after `{proxy}` (the first host) or
+`{proxy}/pubsub.googleapis.com/...` (another bound host):
+
+```yaml
+  GMAIL_TOKEN:
+    tier: proxy
+    optin: true                        # only for the process that asks for it (below)
+    env:
+      GMAIL_API_BASE_URL: "{proxy}"    # https://gmail.googleapis.com
+```
+
+- The token endpoint, the client id and the client secret are fixed in the
+  binding; a request can never pick another. Both referenced names are
+  looked up in the secret's project first, then the user scope, at each
+  refresh. `secret list` shows `oauth <token host> client-id=... client-secret=...`.
+- When the provider refuses the refresh (`invalid_grant`: the account's
+  password changed, access was revoked), the proxy answers 502 with a
+  message that names the secret and says to give the consent again. It
+  never prints the token endpoint's body. Then: `sudo secret rm P/NAME` and
+  `secret oauth login` again (or `sudo secret rotate P/NAME` with a new
+  refresh token).
+- To move an existing run-tier refresh token and client secret into this
+  model without a new consent, rebind them (root, values stay):
+  `sudo secret bind P/GMAIL_OAUTH_CLIENT_SECRET --host oauth2.googleapis.com --header Authorization --basic-user GMAIL_OAUTH_CLIENT_ID`
+  and `sudo secret bind P/GMAIL_TOKEN --host gmail.googleapis.com,pubsub.googleapis.com --token-url https://oauth2.googleapis.com/token --client-id GMAIL_OAUTH_CLIENT_ID --client-secret GMAIL_OAUTH_CLIENT_SECRET`.
+- The audit log records each refresh (`"op":"oauth"`, `detail: refresh <host>`),
+  never a token. Request bodies up to 16 MiB are kept in memory for the one
+  retry; larger bodies are streamed and not retried.
+
+### A secret for one process only
+
+`secret run` gives every entry of `secrets.yaml` to the command. An entry
+with `optin: true` is skipped unless the command asks for it, so a mailbox
+token reaches the mail worker and not the chat server or the test runner:
+
+```bash
+secret run -- pnpm dev                          # everything except opt-in entries
+secret run --with GMAIL_TOKEN -- pnpm mail:worker   # plus GMAIL_TOKEN
+secret run --only DB_PASSWORD,GMAIL_TOKEN -- pnpm evals   # exactly these two
+```
+
+An opt-in entry that has no value in the store does not stop the other
+commands. `secret list` in the project marks such entries `opt-in`.
+
 ### Root commands (your own terminal, never inside an agent session)
 
 ```bash
@@ -303,6 +395,14 @@ your shell files.
   with `sudo secret export`.
 - A value split across two streamed response chunks is still masked, but the
   proxy holds back up to `len(value)-1` bytes until the next chunk.
+- **WebSocket** upgrades go through the proxy: the secret header is added to
+  the upgrade request and the `101` response headers are masked. After the
+  `101` the bytes flow raw in both directions, so a value the upstream sends
+  on the socket itself is not masked. An OAuth binding works the same way:
+  the access token goes on the upgrade request.
+- **OAuth access tokens** live in the daemon's memory until they expire, and
+  the proxy masks the current and the previous one. A token that an
+  upstream echoes long after a refresh is not recognised.
 - Values that were committed to git stay in the git history: rotate them.
 
 ## Development

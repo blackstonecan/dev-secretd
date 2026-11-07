@@ -9,7 +9,6 @@ import (
 	"os"
 	"os/exec"
 	"strconv"
-	"strings"
 	"time"
 
 	"github.com/blackstonecan/dev-secretd/internal/config"
@@ -120,6 +119,9 @@ func rootBind(s *store.Store, audit *state.Audit, who string, args []string) err
 	basic := fs.Bool("basic", false, "")
 	basicUser := fs.String("basic-user", "", "")
 	query := fs.String("query", "", "")
+	tokenURL := fs.String("token-url", "", "")
+	clientID := fs.String("client-id", "", "")
+	clientSecret := fs.String("client-secret", "", "")
 	run := fs.Bool("run", false, "")
 	isFile := fs.Bool("file", false, "")
 	def := fs.Bool("default", false, "")
@@ -132,7 +134,7 @@ func rootBind(s *store.Store, audit *state.Audit, who string, args []string) err
 		return err
 	}
 	if *def || *noDef {
-		if *def && *noDef || *run || *isFile || *host != "" || *header != "" || *format != "" || *query != "" || *basic || *basicUser != "" {
+		if *def && *noDef || *run || *isFile || *host != "" || *header != "" || *format != "" || *query != "" || *basic || *basicUser != "" || *tokenURL != "" || *clientID != "" || *clientSecret != "" {
 			return usageError{"use --default or --no-default alone"}
 		}
 		err = s.SetDefault(p, n, *def, time.Now())
@@ -155,19 +157,12 @@ func rootBind(s *store.Store, audit *state.Audit, who string, args []string) err
 			kind = store.KindFile
 		}
 	} else {
-		h, extra := store.ParseHosts(*host)
-		b = &store.Binding{Host: h, ExtraHosts: extra, Header: *header, Format: *format, BasicAuth: *basic || *basicUser != "", Basic: *basicUser, Query: *query}
+		b = binding(*host, *header, *format, *basic, *basicUser, *query, *tokenURL, *clientID, *clientSecret)
 	}
 	err = s.Rebind(p, n, tier, kind, b, time.Now())
 	detail := string(tier)
 	if b != nil {
-		detail += " " + strings.Join(b.Hosts(), ",")
-		if b.UsesBasic() {
-			detail += " basic"
-		}
-		if b.Basic != "" {
-			detail += " user=" + b.Basic
-		}
+		detail += " " + describeBinding(b)
 	}
 	audit.Log(state.Event{Op: "bind", Project: p, Name: n, Caller: who, Detail: detail, Error: errString(err)})
 	if err != nil {

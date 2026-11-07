@@ -52,6 +52,14 @@ func (c *Client) Resolve(req ResolveRequest) ([]Resolved, error) {
 	return out, err
 }
 
+// OAuthExchange finishes a consent: the daemon exchanges the code and stores
+// the refresh token. The exchange can take a while at the token endpoint.
+func (c *Client) OAuthExchange(req OAuthExchangeRequest) (OAuthExchangeResult, error) {
+	var out OAuthExchangeResult
+	err := c.do("POST", "/v1/oauth/exchange", req, &out)
+	return out, err
+}
+
 func (c *Client) Lock(project string, locked bool) error {
 	path := "/v1/unlock"
 	if locked {

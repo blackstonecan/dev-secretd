@@ -141,6 +141,46 @@ have one (`ANTHROPIC_BASE_URL`, `OPENAI_BASE_URL`, `baseURL`, `base_url`).
 If a client cannot change its base URL, say so, and use the run tier with a
 dev-only key only if the user agrees.
 
+## OAuth2 APIs (Gmail, Google APIs, any refresh-token API)
+
+A refresh token opens a whole account, so it is never tier run. It is a
+proxy secret with an **OAuth binding**: secretd refreshes the access token
+itself and adds `Authorization: Bearer` to each request; the app, and you,
+never see the refresh token, the client secret or the access token. Three
+named parts: the client id (a public value), the client secret (a proxy
+secret bound to the token endpoint's host) and the refresh token.
+
+```bash
+secret set GMAIL_OAUTH_CLIENT_ID <id>.apps.googleusercontent.com --public   # agent may run it
+# the user, in their own terminal (the client secret, typed hidden):
+secret set GMAIL_OAUTH_CLIENT_SECRET --host oauth2.googleapis.com --header Authorization --basic-user GMAIL_OAUTH_CLIENT_ID
+# the consent: a browser opens; secretd exchanges the code and stores the refresh token itself
+secret oauth login GMAIL_TOKEN --google --host gmail.googleapis.com,pubsub.googleapis.com \
+  --client-id GMAIL_OAUTH_CLIENT_ID --client-secret GMAIL_OAUTH_CLIENT_SECRET \
+  --scope https://www.googleapis.com/auth/gmail.readonly,https://www.googleapis.com/auth/gmail.send \
+  --account agent@example.com
+```
+
+The user runs `secret oauth login` (it needs their browser and sign-in).
+Then the entry is an ordinary proxy entry: `GMAIL_TOKEN: { tier: proxy,
+env: { GMAIL_API_BASE_URL: "{proxy}" } }`; the app sends requests to
+`$GMAIL_API_BASE_URL/gmail/v1/...` with no token, and to another bound host
+with `{proxy}/pubsub.googleapis.com/...`. A refresh token that arrives
+another way (a consent script) is stored with `secret set NAME --host ...
+--token-url https://oauth2.googleapis.com/token --client-id ... --client-secret ...`
+on stdin. If the proxy answers `cannot refresh the access token
+(invalid_grant)`, the consent must be given again: tell the user to run
+`/usr/bin/sudo secret rm P/NAME` and `secret oauth login` again; never ask
+for a token.
+
+## A secret for one process only
+
+An entry with `optin: true` in `secrets.yaml` is skipped by `secret run`
+unless the command names it: `secret run --with GMAIL_TOKEN -- pnpm
+mail:worker`. `--only A,B` gives exactly those entries. Use it for a secret
+(a mailbox token, a payment key) that only one of the project's processes
+needs, so the others never hold it.
+
 ## A one-off API call (no project, no `secret run`)
 
 Call a proxy secret's URL directly; secretd adds the real credential. Send a
@@ -236,6 +276,8 @@ secret list --all
 | `no secret P/NAME or user/NAME` | the entry falls back, but neither exists: give the user the `secret set` command (project or `--user`) |
 | `project user is locked` | user-scope secrets are locked: `secret unlock user` only if the user asks |
 | proxy returns `secretd: upstream error` | check the host in `secret list` and the path after `{proxy}` |
+| `cannot refresh the access token (invalid_grant)` | the OAuth consent was revoked (password change): the user runs `/usr/bin/sudo secret rm P/NAME`, then `secret oauth login` again |
+| `oauth client secret X must be a proxy-tier secret bound to H` | give the user the `sudo secret bind` line from the message |
 
 ## Limits to keep in mind
 

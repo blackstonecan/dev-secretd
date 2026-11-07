@@ -26,6 +26,40 @@ func TestFallback(t *testing.T) {
 	}
 }
 
+func TestSelectOptin(t *testing.T) {
+	m, err := Load(write(t, "project: demo\nsecrets:\n  A:\n    tier: run\n  MAIL:\n    tier: proxy\n    optin: true\n    env:\n      M: \"{proxy}\"\n  B:\n    tier: public\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !m.Secrets["MAIL"].Optin || m.Secrets["A"].Optin {
+		t.Fatalf("optin: %+v", m.Secrets)
+	}
+	cases := []struct {
+		only, with []string
+		want       string
+	}{
+		{nil, nil, "A B"},
+		{nil, []string{"MAIL"}, "A B MAIL"},
+		{[]string{"MAIL"}, nil, "MAIL"},
+		{[]string{"B", "A"}, nil, "A B"},
+	}
+	for _, tc := range cases {
+		got, err := m.Select(tc.only, tc.with)
+		if err != nil || strings.Join(got, " ") != tc.want {
+			t.Errorf("Select(%v, %v) = %v, %v; want %s", tc.only, tc.with, got, err, tc.want)
+		}
+	}
+	if _, err := m.Select([]string{"A"}, []string{"MAIL"}); err == nil || !strings.Contains(err.Error(), "not both") {
+		t.Errorf("both flags: %v", err)
+	}
+	if _, err := m.Select(nil, []string{"NOPE"}); err == nil || !strings.Contains(err.Error(), "NOPE is not in") {
+		t.Errorf("unknown name: %v", err)
+	}
+	if got := SplitList(" A, B,,C "); strings.Join(got, "|") != "A|B|C" {
+		t.Errorf("SplitList: %v", got)
+	}
+}
+
 func TestPublicEntry(t *testing.T) {
 	m, err := Load(write(t, "project: demo\nsecrets:\n  GITHUB_USERNAME:\n    tier: public\n  ORG:\n    tier: public\n    var: GITHUB_ORG\n"))
 	if err != nil || m.Secrets["GITHUB_USERNAME"].Tier != "public" || m.Secrets["ORG"].Var != "GITHUB_ORG" {

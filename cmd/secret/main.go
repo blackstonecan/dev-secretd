@@ -38,9 +38,20 @@ User commands:
       --basic-user N   like --basic, with the username from public value N
                        (for services that check it)
       --query Q        proxy tier: query parameter, instead of a header
+      --token-url U --client-id PUB [--client-secret NAME]
+                       proxy tier, OAuth2: the value is a refresh token; secretd gets
+                       access tokens from U and sends "Authorization: Bearer". PUB is a
+                       public value with the client id; NAME a proxy-tier secret with the
+                       client secret, bound to U's host
+  secret oauth login NAME --host H[,H2] --client-id PUB --client-secret NAME --scope S[,S]
+                    (--google | --auth-url U --token-url U [--revoke-url U]) [--account EMAIL] [--no-open]
+                                          run the OAuth consent (browser, loopback, PKCE); secretd
+                                          exchanges the code and stores the refresh token itself
   secret get NAME [--project P | --user]  print a public value (the project's, else the user's)
   secret list [--project P | --all]       names and rules; values of public entries only
   secret run [--project P] -- CMD...      run CMD with the secrets of secrets.yaml
+      --with A,B       also give the opt-in entries A and B ("optin: true" in secrets.yaml)
+      --only A,B       give only A and B
   secret run --user -- CMD...             run CMD with the secrets of the user manifest
   secret import FILE [--keep K1,K2] [--yes]
                                           move values from a .env file into secretd
@@ -57,7 +68,8 @@ Root commands (run with: /usr/bin/sudo secret ...):
   reveal P/NAME        print a value (run it in your own terminal, not in an agent)
   rotate P/NAME        replace a value
   rm P/NAME            delete a secret
-  bind P/NAME [--host H[,H2] --header X [--format F | --basic [--basic-user N]] | --query Q | --run [--file]]
+  bind P/NAME [--host H[,H2] --header X [--format F | --basic [--basic-user N]] | --query Q
+               | --host H[,H2] --token-url U --client-id PUB [--client-secret NAME] | --run [--file]]
                        change the tier or the binding (private and public never convert)
   bind user/NAME --default | --no-default
                        make a user-scope secret a default for all projects, or not
@@ -84,6 +96,16 @@ Common workflows:
   A value that is not secret (readable by anyone):
     secret set GITHUB_USERNAME you --user --public
     secret get GITHUB_USERNAME
+
+  A Google API through OAuth (the app gets a local URL; refresh and access tokens stay in secretd):
+    secret set GMAIL_OAUTH_CLIENT_ID <id>.apps.googleusercontent.com --public
+    secret set GMAIL_OAUTH_CLIENT_SECRET --host oauth2.googleapis.com --header Authorization --basic-user GMAIL_OAUTH_CLIENT_ID
+    secret oauth login GMAIL_TOKEN --google --host gmail.googleapis.com,pubsub.googleapis.com \
+      --client-id GMAIL_OAUTH_CLIENT_ID --client-secret GMAIL_OAUTH_CLIENT_SECRET \
+      --scope https://www.googleapis.com/auth/gmail.readonly,https://www.googleapis.com/auth/gmail.send \
+      --account agent@example.com
+    (in secrets.yaml: GMAIL_TOKEN: { tier: proxy, optin: true, env: { GMAIL_API_BASE_URL: "{proxy}" } })
+    secret run --with GMAIL_TOKEN -- pnpm mail:worker
 `
 
 func main() {
@@ -102,6 +124,8 @@ func main() {
 		err = cmdGit(args)
 	case "get":
 		err = cmdGet(args)
+	case "oauth":
+		err = cmdOAuth(args)
 	case "list":
 		err = cmdList(args)
 	case "run":

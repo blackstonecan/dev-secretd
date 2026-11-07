@@ -14,6 +14,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -67,6 +68,67 @@ type Binding struct {
 	// and then the user scope at each request.
 	Basic string `json:"basic,omitempty"`
 	Query string `json:"query,omitempty"` // query parameter name, instead of a header
+	// OAuth (optional): the secret is an OAuth2 refresh token. The proxy gets
+	// an access token from the token endpoint and sends it as
+	// "Authorization: Bearer <access>"; Header, Format, Query and Basic are
+	// unused. Neither token ever leaves the daemon.
+	OAuth *OAuth `json:"oauth,omitempty"`
+}
+
+// OAuth is the token-endpoint part of a refresh-token binding. Everything
+// here is fixed when the secret is set or bound; a request never changes it.
+type OAuth struct {
+	TokenURL string `json:"token_url"` // HTTPS, for example https://oauth2.googleapis.com/token
+	// ClientID names a public value that holds the OAuth client id.
+	ClientID string `json:"client_id"`
+	// ClientSecret (optional, for confidential clients) names a proxy-tier
+	// secret bound to the token endpoint's host: the secret's project first,
+	// then the user scope. It never has another tier, so it never leaves the
+	// daemon either.
+	ClientSecret string `json:"client_secret,omitempty"`
+}
+
+// TokenHost is the host of the token endpoint.
+func (o *OAuth) TokenHost() string {
+	u, err := url.Parse(o.TokenURL)
+	if err != nil {
+		return ""
+	}
+	return u.Host
+}
+
+// OAuthClient resolves the client id and client secret an OAuth binding of
+// project names. The client secret is nil when the binding names none.
+func (s *Store) OAuthClient(project string, o *OAuth) (clientID string, clientSecret *Secret, err error) {
+	id, err := s.ResolvePublic(project, o.ClientID)
+	if err != nil {
+		return "", nil, fmt.Errorf("oauth client id %s: %w (set it with `secret set %s VALUE --public`)", o.ClientID, err, o.ClientID)
+	}
+	if o.ClientSecret == "" {
+		return id.Value, nil, nil
+	}
+	cs, err := s.Get(project, o.ClientSecret)
+	if errors.Is(err, ErrNotFound) && project != UserProject {
+		cs, err = s.Get(UserProject, o.ClientSecret)
+	}
+	if err != nil {
+		return "", nil, fmt.Errorf("oauth client secret %s: %w", o.ClientSecret, err)
+	}
+	host := o.TokenHost()
+	if cs.Tier != TierProxy || cs.Binding == nil || !hasHost(cs.Binding, host) {
+		return "", nil, fmt.Errorf("oauth client secret %s must be a proxy-tier secret bound to %s "+
+			"(/usr/bin/sudo secret bind %s --host %s --header Authorization --basic-user %s)", cs.Key(), host, cs.Key(), host, o.ClientID)
+	}
+	return id.Value, cs, nil
+}
+
+func hasHost(b *Binding, host string) bool {
+	for _, h := range b.Hosts() {
+		if strings.EqualFold(h, host) {
+			return true
+		}
+	}
+	return false
 }
 
 // DefaultBasicUser is the Basic auth username when a binding names none.
@@ -184,6 +246,22 @@ func (s *Secret) Validate() error {
 				return fmt.Errorf("host %q is listed twice", h)
 			}
 			seen[strings.ToLower(h)] = true
+		}
+		if o := b.OAuth; o != nil {
+			u, err := url.Parse(o.TokenURL)
+			if err != nil || u.Scheme != "https" || u.Host == "" || u.User != nil {
+				return errors.New("--token-url must be an https URL")
+			}
+			if !ValidName(o.ClientID) {
+				return fmt.Errorf("--client-id names a public value (UPPER_SNAKE_CASE), got %q", o.ClientID)
+			}
+			if o.ClientSecret != "" && !ValidName(o.ClientSecret) {
+				return fmt.Errorf("--client-secret names a proxy-tier secret (UPPER_SNAKE_CASE), got %q", o.ClientSecret)
+			}
+			if b.Header != "" || b.Query != "" || b.Format != "" || b.UsesBasic() {
+				return errors.New("an OAuth binding takes --host, --token-url, --client-id and --client-secret only")
+			}
+			return nil
 		}
 		if b.UsesBasic() {
 			if b.Header == "" || b.Format != "" {

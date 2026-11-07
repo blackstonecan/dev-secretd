@@ -24,6 +24,11 @@
 //	    fallback: none       # never a user-scope default: this project needs its own
 //	    env:
 //	      GITHUB_API_URL: "{proxy}"
+//	  GMAIL_TOKEN:
+//	    tier: proxy
+//	    optin: true          # only for `secret run --with GMAIL_TOKEN`
+//	    env:
+//	      GMAIL_API_BASE_URL: "{proxy}"
 //
 // The user manifest (UserPath) has `project: user` and lists the user-scope
 // secrets for `secret run --user`.
@@ -36,6 +41,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"sort"
+	"strings"
 
 	"github.com/blackstonecan/dev-secretd/internal/store"
 	"gopkg.in/yaml.v3"
@@ -51,6 +57,10 @@ type Entry struct {
 	// secret, "none" never falls back, and empty uses the user-scope secret
 	// only if it is a default. A project secret of the same name always wins.
 	Fallback string `yaml:"fallback,omitempty"`
+	// Optin: `secret run` skips this entry unless the command names it
+	// (`secret run --with NAME` or `--only NAME`). For a secret only one of
+	// the project's processes needs.
+	Optin bool `yaml:"optin,omitempty"`
 }
 
 type Manifest struct {
@@ -173,6 +183,48 @@ func (m *Manifest) Names() []string {
 		out = append(out, n)
 	}
 	sort.Strings(out)
+	return out
+}
+
+// Select returns the names a `secret run` command gets, sorted. With only,
+// exactly those names; otherwise every entry that is not opt-in, plus the
+// names in with. Every name given must be an entry.
+func (m *Manifest) Select(only, with []string) ([]string, error) {
+	if len(only) > 0 && len(with) > 0 {
+		return nil, errors.New("use --only or --with, not both")
+	}
+	for _, n := range append(append([]string{}, only...), with...) {
+		if _, ok := m.Secrets[n]; !ok {
+			return nil, fmt.Errorf("%s is not in %s", n, m.Path)
+		}
+	}
+	if len(only) > 0 {
+		out := append([]string{}, only...)
+		sort.Strings(out)
+		return out, nil
+	}
+	pick := map[string]bool{}
+	for _, n := range with {
+		pick[n] = true
+	}
+	var out []string
+	for n, e := range m.Secrets {
+		if !e.Optin || pick[n] {
+			out = append(out, n)
+		}
+	}
+	sort.Strings(out)
+	return out, nil
+}
+
+// SplitList splits a comma-separated flag value, dropping blanks.
+func SplitList(s string) []string {
+	var out []string
+	for _, p := range strings.Split(s, ",") {
+		if p = strings.TrimSpace(p); p != "" {
+			out = append(out, p)
+		}
+	}
 	return out
 }
 

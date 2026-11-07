@@ -190,9 +190,43 @@ cd "$work/sshrepo" && git init -q && git remote add origin git@github.com:acme/a
 check "git: SSH remote refused" "uses SSH"                "$("$secret" git --no-check 2>&1 || true)"
 unset GIT_CONFIG_GLOBAL GIT_CONFIG_NOSYSTEM
 
+# --- opt-in run entries: --with and --only ---
+mkdir -p "$work/optin" && cd "$work/optin"
+printf '%s\n' 'project: optin' 'secrets:' \
+  '  BASE_PW:' '    tier: run' \
+  '  MAIL_PW:' '    tier: run' '    optin: true' > secrets.yaml
+printf 'base' | "$secret" set BASE_PW >/dev/null
+check "optin: skipped by default" "base|"       "$("$secret" run -- sh -c 'echo "$BASE_PW|$MAIL_PW"')"
+printf 'mail' | "$secret" set MAIL_PW >/dev/null
+check "optin: list note"        "opt-in (secret run --with MAIL_PW)" "$("$secret" list | grep optin/MAIL_PW)"
+check "optin: still skipped"    "base|"         "$("$secret" run -- sh -c 'echo "$BASE_PW|$MAIL_PW"')"
+check "optin: --with"           "base|mail"     "$("$secret" run --with MAIL_PW -- sh -c 'echo "$BASE_PW|$MAIL_PW"')"
+check "optin: --only"           "|mail"         "$("$secret" run --only MAIL_PW -- sh -c 'echo "$BASE_PW|$MAIL_PW"')"
+check "optin: unknown name"     "NOPE is not in" "$("$secret" run --with NOPE -- true 2>&1 || true)"
+check "optin: not both"         "not both"      "$("$secret" run --only BASE_PW --with MAIL_PW -- true 2>&1 || true)"
+
+# --- OAuth refresh-token bindings (the unit tests cover the token endpoint) ---
+mkdir -p "$work/oauth" && cd "$work/oauth"
+"$secret" init --project oauth >/dev/null
+check "oauth: client id public"  "set oauth/GM_CID" "$("$secret" set GM_CID cid.apps.googleusercontent.com --public)"
+check "oauth: client secret"     "stored oauth/GM_CSECRET" "$(printf 'cs-fake' | "$secret" set GM_CSECRET --host oauth2.googleapis.com --header Authorization --basic-user GM_CID)"
+check "oauth: set refresh token" "stored oauth/GM_TOKEN (tier proxy)" "$(printf 'rt-fake' | "$secret" set GM_TOKEN --host gmail.googleapis.com,pubsub.googleapis.com --token-url https://oauth2.googleapis.com/token --client-id GM_CID --client-secret GM_CSECRET)"
+check "oauth: list"              "gmail.googleapis.com,pubsub.googleapis.com oauth oauth2.googleapis.com client-id=GM_CID client-secret=GM_CSECRET" "$("$secret" list | grep oauth/GM_TOKEN)"
+check "oauth: http token url"    "https URL"     "$(printf 'x' | "$secret" set GM_BAD --host a.com --token-url http://x/token --client-id GM_CID 2>&1 || true)"
+check "oauth: header refused"    "takes --host, --token-url" "$(printf 'x' | "$secret" set GM_BAD2 --host a.com --header x --token-url https://x/token --client-id GM_CID 2>&1 || true)"
+check "oauth: client-id alone"   "go with --token-url" "$(printf 'x' | "$secret" set GM_BAD3 --client-id GM_CID 2>&1 || true)"
+printf '%s\n' 'project: oauth' 'secrets:' '  GM_TOKEN:' '    tier: proxy' '    env:' '      GM_BASE: "{proxy}"' > secrets.yaml
+check "oauth: run gives the URL" "http://127.0.0.1:$port/oauth/GM_TOKEN" "$("$secret" run -- sh -c 'echo "$GM_BASE"')"
+# The proxy refuses before any network call when the client secret is wrong, and names the fix.
+printf 'x' | "$secret" set GM_TOKEN2 --host gmail.googleapis.com --token-url https://oauth2.googleapis.com/token --client-id GM_CID --client-secret BASE_NOPE >/dev/null
+check "oauth: missing client secret" "oauth client secret BASE_NOPE" "$(curl -s "http://127.0.0.1:$port/oauth/GM_TOKEN2/x")"
+check "oauth login: name exists" "exists already"  "$("$secret" oauth login GM_TOKEN --google --host gmail.googleapis.com --client-id GM_CID --scope a 2>&1 || true)"
+check "oauth login: needs scope" "--scope is required" "$("$secret" oauth login GM_NEW --google --host gmail.googleapis.com --client-id GM_CID 2>&1 || true)"
+check "oauth login: needs endpoints" "--google, or --auth-url" "$("$secret" oauth login GM_NEW --host gmail.googleapis.com --client-id GM_CID --scope a 2>&1 || true)"
+
 # --- root and audit ---
 check "root commands need sudo" "needs root" "$("$secret" reveal demo/DB_PASSWORD 2>&1 || true)"
-if grep -q 'pw-123\|sk-fake\|sk_test_abc\|npm-user\|gh-user\|npm-fb\|ghd-user\|ghd-client\|git-tok\|cust-tok' "$work/state/audit.log"; then fail "audit log has a value"; else ok "audit log has no values"; fi
+if grep -q 'pw-123\|sk-fake\|sk_test_abc\|npm-user\|gh-user\|npm-fb\|ghd-user\|ghd-client\|git-tok\|cust-tok\|rt-fake\|cs-fake' "$work/state/audit.log"; then fail "audit log has a value"; else ok "audit log has no values"; fi
 check "audit: fallback recorded" '"detail":"run from user"' "$(cat "$work/state/audit.log")"
 check "audit log written" '"op":"resolve"' "$(cat "$work/state/audit.log")"
 if grep -aq 'pw-123\|sk-fake' "$work/state/store.enc"; then fail "store file has plaintext"; else ok "store file is encrypted"; fi

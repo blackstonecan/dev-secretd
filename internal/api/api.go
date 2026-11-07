@@ -71,6 +71,35 @@ type ProjectRequest struct {
 	Project string `json:"project"`
 }
 
+// OAuthExchangeRequest asks the daemon to finish an OAuth consent: it
+// exchanges the authorization code at the binding's token endpoint and stores
+// the refresh token as a new proxy-tier secret. No token reaches the caller.
+type OAuthExchangeRequest struct {
+	Project string `json:"project"`
+	Name    string `json:"name"`
+	// Binding of the new secret: the API hosts and the OAuth part (token
+	// URL, client id and client secret by name).
+	Binding      *store.Binding `json:"binding"`
+	Code         string         `json:"code"`
+	RedirectURI  string         `json:"redirect_uri"`
+	CodeVerifier string         `json:"code_verifier"`
+	// Scopes that must all be granted, else nothing is stored.
+	Scopes []string `json:"scopes,omitempty"`
+	// Account (optional): the email the id_token must name, else nothing is
+	// stored. Needs the openid and email scopes.
+	Account string `json:"account,omitempty"`
+	// RevokeURL (optional): tokens that fail a check are revoked here.
+	RevokeURL string `json:"revoke_url,omitempty"`
+	Default   bool   `json:"default,omitempty"` // user scope only
+}
+
+type OAuthExchangeResult struct {
+	Stored  string   `json:"stored"`
+	Scopes  []string `json:"scopes"`            // granted scopes, when the provider says
+	Account string   `json:"account,omitempty"` // the id_token's email, when there is one
+	Revoked bool     `json:"revoked,omitempty"`
+}
+
 type Status struct {
 	ProxyAddr string   `json:"proxy_addr"`
 	Locked    []string `json:"locked"`
@@ -89,6 +118,8 @@ type Server struct {
 	AllowUID  int
 	ProxyAddr string
 	Now       func() time.Time
+	// HTTP reaches OAuth token endpoints. nil = a default client.
+	HTTP *http.Client
 }
 
 type callerKey struct{}
@@ -117,6 +148,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /v1/list", s.list)
 	mux.HandleFunc("GET /v1/get", s.get)
 	mux.HandleFunc("POST /v1/resolve", s.resolve)
+	mux.HandleFunc("POST /v1/oauth/exchange", s.oauthExchange)
 	mux.HandleFunc("POST /v1/lock", s.lockFn(true))
 	mux.HandleFunc("POST /v1/unlock", s.lockFn(false))
 	mux.HandleFunc("GET /v1/status", s.status)

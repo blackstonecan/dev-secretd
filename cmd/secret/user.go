@@ -94,6 +94,9 @@ func cmdSet(args []string) error {
 	basic := fs.Bool("basic", false, "")
 	basicUser := fs.String("basic-user", "", "")
 	query := fs.String("query", "", "")
+	tokenURL := fs.String("token-url", "", "")
+	clientID := fs.String("client-id", "", "")
+	clientSecret := fs.String("client-secret", "", "")
 	public := fs.Bool("public", false, "")
 	name, rest := firstArg(args)
 	// A value on the command line: public values only (secret values are typed hidden).
@@ -121,22 +124,23 @@ func cmdSet(args []string) error {
 		return err
 	}
 	if *public {
-		if *def || *isFile || *host != "" || *header != "" || *format != "" || *basic || *basicUser != "" || *query != "" {
+		if *def || *isFile || *host != "" || *header != "" || *format != "" || *basic || *basicUser != "" || *query != "" || *tokenURL != "" || *clientID != "" || *clientSecret != "" {
 			return usageError{"a public value takes only a value, --project and --user"}
 		}
 		return setPublic(p, name, given)
 	}
 
 	req := api.SetRequest{Project: p, Name: name, Tier: store.TierRun, Kind: store.KindEnv, Default: *def}
-	if *host != "" || *header != "" || *query != "" {
+	if *host != "" || *header != "" || *query != "" || *tokenURL != "" {
 		if *isFile {
 			return usageError{"--file is for run-tier secrets only"}
 		}
-		h, extra := store.ParseHosts(*host)
 		req.Tier, req.Kind = store.TierProxy, ""
-		req.Binding = &store.Binding{Host: h, ExtraHosts: extra, Header: *header, Format: *format, BasicAuth: *basic || *basicUser != "", Basic: *basicUser, Query: *query}
+		req.Binding = binding(*host, *header, *format, *basic, *basicUser, *query, *tokenURL, *clientID, *clientSecret)
 	} else if *basic || *basicUser != "" {
 		return usageError{"--basic is for proxy-tier secrets: add --host and --header"}
+	} else if *clientID != "" || *clientSecret != "" {
+		return usageError{"--client-id and --client-secret go with --token-url (an OAuth refresh token)"}
 	} else if *isFile {
 		req.Kind = store.KindFile
 	}
@@ -172,12 +176,47 @@ func cmdSet(args []string) error {
 			return nil
 		}
 	}
-	if req.Tier == store.TierProxy {
+	switch {
+	case req.Tier == store.TierProxy && req.Binding.OAuth != nil:
+		fmt.Printf("add to secrets.yaml:\n  %s:\n    tier: proxy\n    env:\n      SOME_API_BASE_URL: \"{proxy}\"   # secretd adds Authorization: Bearer <access token>\n", name)
+	case req.Tier == store.TierProxy:
 		fmt.Printf("add to secrets.yaml:\n  %s:\n    tier: proxy\n    env:\n      SOME_BASE_URL: \"{proxy}\"\n      SOME_API_KEY: placeholder\n", name)
-	} else {
+	default:
 		fmt.Printf("add to secrets.yaml:\n  %s:\n    tier: run\n", name)
 	}
 	return nil
+}
+
+// binding builds a proxy-tier binding from the shared set/bind flags. With a
+// token URL it is an OAuth refresh-token binding.
+func binding(host, header, format string, basic bool, basicUser, query, tokenURL, clientID, clientSecret string) *store.Binding {
+	h, extra := store.ParseHosts(host)
+	b := &store.Binding{Host: h, ExtraHosts: extra, Header: header, Format: format, BasicAuth: basic || basicUser != "", Basic: basicUser, Query: query}
+	if tokenURL != "" || clientID != "" || clientSecret != "" {
+		b.OAuth = &store.OAuth{TokenURL: tokenURL, ClientID: clientID, ClientSecret: clientSecret}
+	}
+	return b
+}
+
+// describeBinding is the USE column of `secret list`.
+func describeBinding(b *store.Binding) string {
+	hosts := strings.Join(b.Hosts(), ",")
+	switch {
+	case b.OAuth != nil:
+		use := hosts + " oauth " + b.OAuth.TokenHost() + " client-id=" + b.OAuth.ClientID
+		if b.OAuth.ClientSecret != "" {
+			use += " client-secret=" + b.OAuth.ClientSecret
+		}
+		return use
+	case b.Basic != "":
+		return hosts + " header " + b.Header + " basic user=" + b.Basic
+	case b.BasicAuth:
+		return hosts + " header " + b.Header + " basic"
+	case b.Header != "":
+		return hosts + " header " + b.Header
+	default:
+		return hosts + " query " + b.Query
+	}
 }
 
 // setPublic adds or changes a public value. Without a value on the command
@@ -344,18 +383,8 @@ func cmdList(args []string) error {
 	fmt.Fprintln(w, "SECRET\tTIER\tUSE\tLOCKED\tUPDATED\tNOTE")
 	for _, s := range list {
 		use := string(s.Kind)
-		if b := s.Binding; b != nil {
-			hosts := strings.Join(b.Hosts(), ",")
-			switch {
-			case b.Basic != "":
-				use = hosts + " header " + b.Header + " basic user=" + b.Basic
-			case b.BasicAuth:
-				use = hosts + " header " + b.Header + " basic"
-			case b.Header != "":
-				use = hosts + " header " + b.Header
-			default:
-				use = hosts + " query " + b.Query
-			}
+		if s.Binding != nil {
+			use = describeBinding(s.Binding)
 		}
 		if s.Tier == store.TierPublic {
 			use = "= " + s.Value
@@ -368,6 +397,9 @@ func cmdList(args []string) error {
 				note = "default for all projects"
 			}
 		}
+		if m != nil && m.Project == p && m.Secrets[s.Name].Optin {
+			note = strings.TrimSpace(note + " opt-in (secret run --with " + s.Name + ")")
+		}
 		fmt.Fprintf(w, "%s/%s\t%s\t%s\t%v\t%s\t%s\n", s.Project, s.Name, s.Tier, use, s.Locked, s.UpdatedAt.Format("2006-01-02"), note)
 	}
 	return w.Flush()
@@ -377,12 +409,14 @@ func cmdRun(args []string) (int, error) {
 	fs := flag.NewFlagSet("run", flag.ContinueOnError)
 	project := fs.String("project", "", "")
 	user := fs.Bool("user", false, "")
+	only := fs.String("only", "", "")
+	with := fs.String("with", "", "")
 	if err := fs.Parse(args); err != nil {
 		return 0, usageError{err.Error()}
 	}
 	command := fs.Args()
 	if len(command) == 0 {
-		return 0, usageError{"usage: secret run [--project P | --user] -- CMD..."}
+		return 0, usageError{"usage: secret run [--project P | --user] [--only A,B | --with A,B] -- CMD..."}
 	}
 	var m *manifest.Manifest
 	var err error
@@ -403,8 +437,12 @@ func cmdRun(args []string) (int, error) {
 		return 0, usageError{fmt.Sprintf("--project %s does not match %s (project %s)", *project, m.Path, m.Project)}
 	}
 
+	names, err := m.Select(manifest.SplitList(*only), manifest.SplitList(*with))
+	if err != nil {
+		return 0, usageError{err.Error()}
+	}
 	req := api.ResolveRequest{Project: m.Project}
-	for _, n := range m.Names() {
+	for _, n := range names {
 		e := m.Secrets[n]
 		req.Items = append(req.Items, api.ResolveItem{Name: n, Tier: e.Tier, Fallback: e.Fallback})
 	}
