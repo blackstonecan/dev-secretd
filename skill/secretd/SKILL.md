@@ -9,7 +9,7 @@ Secrets on this machine live in **secretd**, a daemon that runs as its own
 system user (`devsecrets`). Agents can **add** and **use** secrets, but cannot
 **see** them. Only the user, with `sudo` and a password, can read, change or
 delete them. Source and full docs: the `dev-secretd` repository, on this
-machine at `~/sandbox/projects/secretd` (README.md). The installed command is
+machine at `~/Desktop/projects/secretd` (README.md). The installed command is
 `secret`, the daemon and service `secretd`.
 
 ## Hard rules
