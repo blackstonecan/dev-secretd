@@ -64,6 +64,21 @@ func TestBuild(t *testing.T) {
 	}
 }
 
+// A BaseURL that carries a run key is substituted as is.
+func TestBuildRunKeyURL(t *testing.T) {
+	m := &manifest.Manifest{Project: "demo", Secrets: map[string]manifest.Entry{
+		"MAIL": {Tier: store.TierProxy, Env: map[string]string{"MAIL_BASE": "{proxy}/v1"}},
+	}}
+	url := "http://127.0.0.1:7777/demo/MAIL/rk-abc123"
+	env, err := Build(m, []api.Resolved{{Name: "MAIL", Tier: store.TierProxy, BaseURL: url, RunKey: true, Key: "abc123"}}, t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if env.Vars["MAIL_BASE"] != url+"/v1" {
+		t.Fatalf("vars: %v", env.Vars)
+	}
+}
+
 func TestMerge(t *testing.T) {
 	got := Merge([]string{"A=1", "B=2"}, map[string]string{"B": "x", "C": "3"})
 	slices.Sort(got)

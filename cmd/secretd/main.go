@@ -18,6 +18,7 @@ import (
 	"github.com/blackstonecan/dev-secretd/internal/api"
 	"github.com/blackstonecan/dev-secretd/internal/config"
 	"github.com/blackstonecan/dev-secretd/internal/proxy"
+	"github.com/blackstonecan/dev-secretd/internal/runkey"
 	"github.com/blackstonecan/dev-secretd/internal/state"
 	"github.com/blackstonecan/dev-secretd/internal/store"
 )
@@ -53,6 +54,9 @@ func main() {
 	}
 	audit := state.NewAudit(cfg.StateDir)
 
+	// Per-run keys live in memory only; a restart ends them all.
+	keys := runkey.New()
+
 	_ = os.Remove(cfg.Socket)
 	apiLn, err := net.Listen("unix", cfg.Socket)
 	if err != nil {
@@ -63,7 +67,7 @@ func main() {
 		log.Fatal(err)
 	}
 	apiSrv := &http.Server{
-		Handler:           (&api.Server{Store: s, State: st, Audit: audit, AllowUID: cfg.AllowUID, ProxyAddr: cfg.ProxyAddr}).Handler(),
+		Handler:           (&api.Server{Store: s, State: st, Audit: audit, AllowUID: cfg.AllowUID, ProxyAddr: cfg.ProxyAddr, Keys: keys}).Handler(),
 		ConnContext:       api.ConnContext,
 		ReadHeaderTimeout: 10 * time.Second,
 	}
@@ -73,7 +77,7 @@ func main() {
 		log.Fatal(err)
 	}
 	proxySrv := &http.Server{
-		Handler:           &proxy.Proxy{Store: s, State: st, Audit: audit},
+		Handler:           &proxy.Proxy{Store: s, State: st, Audit: audit, Keys: keys},
 		ReadHeaderTimeout: 30 * time.Second,
 	}
 
@@ -93,6 +97,8 @@ func main() {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
+	// Held resolve requests return only when their keys are revoked.
+	keys.RevokeAll()
 	_ = apiSrv.Shutdown(ctx)
 	_ = proxySrv.Shutdown(ctx)
 	_ = os.Remove(cfg.Socket)

@@ -73,6 +73,9 @@ type Binding struct {
 	// "Authorization: Bearer <access>"; Header, Format, Query and Basic are
 	// unused. Neither token ever leaves the daemon.
 	OAuth *OAuth `json:"oauth,omitempty"`
+	// RunKey: the proxy serves this secret only to requests with a live
+	// per-run key from `secret run` (see internal/runkey).
+	RunKey bool `json:"run_key,omitempty"`
 }
 
 // OAuth is the token-endpoint part of a refresh-token binding. Everything

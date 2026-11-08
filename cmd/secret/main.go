@@ -43,8 +43,11 @@ User commands:
                        access tokens from U and sends "Authorization: Bearer". PUB is a
                        public value with the client id; NAME a proxy-tier secret with the
                        client secret, bound to U's host
+      --run-key        proxy tier: the proxy serves it only to a "secret run" process
+                       that lists it (per-run key, gone when the run ends)
   secret oauth login NAME --host H[,H2] --client-id PUB --client-secret NAME --scope S[,S]
-                    (--google | --auth-url U --token-url U [--revoke-url U]) [--account EMAIL] [--no-open]
+                    (--google | --auth-url U --token-url U [--revoke-url U]) [--account EMAIL]
+                    [--run-key] [--no-open]
                                           run the OAuth consent (browser, loopback, PKCE); secretd
                                           exchanges the code and stores the refresh token itself
   secret get NAME [--project P | --user]  print a public value (the project's, else the user's)
@@ -52,6 +55,9 @@ User commands:
   secret run [--project P] -- CMD...      run CMD with the secrets of secrets.yaml
       --with A,B       also give the opt-in entries A and B ("optin: true" in secrets.yaml)
       --only A,B       give only A and B
+                       A secret with a per-run key gets SECRETD_RUN_KEY in the environment;
+                       its {proxy} URL already carries the key (/P/NAME/rk-<key>/...), or
+                       send it as the header X-Secretd-Run-Key
   secret run --user -- CMD...             run CMD with the secrets of the user manifest
   secret import FILE [--keep K1,K2] [--yes]
                                           move values from a .env file into secretd
@@ -70,7 +76,12 @@ Root commands (run with: /usr/bin/sudo secret ...):
   rm P/NAME            delete a secret
   bind P/NAME [--host H[,H2] --header X [--format F | --basic [--basic-user N]] | --query Q
                | --host H[,H2] --token-url U --client-id PUB [--client-secret NAME] | --run [--file]]
-                       change the tier or the binding (private and public never convert)
+               [--run-key]
+                       change the tier or the binding (private and public never convert);
+                       a per-run key requirement stays unless you use --no-run-key
+  bind P/NAME --run-key | --no-run-key
+                       the proxy serves a proxy-tier secret only to a "secret run"
+                       process that lists it, or to anyone again
   bind user/NAME --default | --no-default
                        make a user-scope secret a default for all projects, or not
   export --recipient AGE_PUBLIC_KEY --out FILE
@@ -105,6 +116,10 @@ Common workflows:
       --scope https://www.googleapis.com/auth/gmail.readonly,https://www.googleapis.com/auth/gmail.send \
       --account agent@example.com
     (in secrets.yaml: GMAIL_TOKEN: { tier: proxy, optin: true, env: { GMAIL_API_BASE_URL: "{proxy}" } })
+    secret run --with GMAIL_TOKEN -- pnpm mail:worker
+
+  Only your own process may use a proxy secret (not any program that calls the port):
+    /usr/bin/sudo secret bind PROJECT/GMAIL_TOKEN --run-key
     secret run --with GMAIL_TOKEN -- pnpm mail:worker
 `
 

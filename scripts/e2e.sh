@@ -224,6 +224,47 @@ check "oauth login: name exists" "exists already"  "$("$secret" oauth login GM_T
 check "oauth login: needs scope" "--scope is required" "$("$secret" oauth login GM_NEW --google --host gmail.googleapis.com --client-id GM_CID 2>&1 || true)"
 check "oauth login: needs endpoints" "--google, or --auth-url" "$("$secret" oauth login GM_NEW --host gmail.googleapis.com --client-id GM_CID --scope a 2>&1 || true)"
 
+# --- per-run keys (the unit tests cover forwarding) ---
+mkdir -p "$work/rk" && cd "$work/rk"
+printf '%s\n' 'project: rk' 'secrets:' \
+  '  MAIL_KEY:' '    tier: proxy' '    optin: true' '    env:' '      MAIL_BASE: "{proxy}"' > secrets.yaml
+check "run-key: set"            "stored rk/MAIL_KEY" "$(printf 'mail-fake-secret' | "$secret" set MAIL_KEY --host api.example.com --header x-api-key --run-key)"
+check "run-key: list shows it"  "run-key"            "$("$secret" list | grep rk/MAIL_KEY)"
+check "run-key: public refused" "a public value takes" "$("$secret" set X1 v --public --run-key 2>&1 || true)"
+check "run-key: run tier refused" "for proxy-tier secrets" "$(printf 'x' | "$secret" set RK_RUN --run-key 2>&1 || true)"
+check "run-key: no key is 401"  "needs a per-run key" "$(curl -s "http://127.0.0.1:$port/rk/MAIL_KEY/x")"
+[[ "$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:$port/rk/MAIL_KEY/x")" == 401 ]] && ok "run-key: status 401" || fail "run-key: no key is not 401"
+check "run-key: wrong key"      "run key is not valid" "$(curl -s "http://127.0.0.1:$port/rk/MAIL_KEY/rk-deadbeef/x")"
+rk_url="$("$secret" run --only MAIL_KEY -- sh -c 'echo "$MAIL_BASE"')"
+check "run-key: URL has the key" "/rk/MAIL_KEY/rk-" "$rk_url"
+rk_key="${rk_url##*/rk-}"
+[[ ${#rk_key} -eq 64 ]] && ok "run-key: key is 64 chars" || fail "run-key: key length ${#rk_key}"
+rk_during="$("$secret" run --only MAIL_KEY -- sh -c 'curl -s -o /dev/null -w "%{http_code}" "$MAIL_BASE/x"; echo; [ "$SECRETD_RUN_KEY" = "${MAIL_BASE##*/rk-}" ] && echo same-key; "'"$secret"'" status | grep run_keys')"
+[[ "$rk_during" != 401* && "$rk_during" != 403* ]] && ok "run-key: served during the run" || fail "run-key: refused during the run: $rk_during"
+check "run-key: SECRETD_RUN_KEY set" "same-key"   "$rk_during"
+check "run-key: status counts it"    "run_keys: 1" "$rk_during"
+for _ in $(seq 50); do [[ "$("$secret" status)" == *"run_keys: 0"* ]] && break; sleep 0.1; done
+check "run-key: ended with the run" "run_keys: 0" "$("$secret" status)"
+check "run-key: dead after exit" "run key is not valid" "$(curl -s "$rk_url/x")"
+[[ "$(curl -s -o /dev/null -w '%{http_code}' "$rk_url/x")" == 403 ]] && ok "run-key: status 403 after exit" || fail "run-key: old key not 403"
+# A run killed with SIGKILL ends its key too (the kernel closes the connection).
+"$secret" run --only MAIL_KEY -- sleep 37 & rk_pid=$!
+for _ in $(seq 50); do [[ "$("$secret" status)" == *"run_keys: 1"* ]] && break; sleep 0.1; done
+check "run-key: live while running" "run_keys: 1" "$("$secret" status)"
+kill -9 "$rk_pid"; wait "$rk_pid" 2>/dev/null || true; pkill -f 'sleep 37' || true
+for _ in $(seq 50); do [[ "$("$secret" status)" == *"run_keys: 0"* ]] && break; sleep 0.1; done
+check "run-key: SIGKILL ends it" "run_keys: 0" "$("$secret" status)"
+# Locking the project ends the keys of its runs.
+"$secret" run --only MAIL_KEY -- sleep 37 & rk_pid=$!
+for _ in $(seq 50); do [[ "$("$secret" status)" == *"run_keys: 1"* ]] && break; sleep 0.1; done
+"$secret" lock rk >/dev/null
+check "run-key: lock ends it" "run_keys: 0" "$("$secret" status)"
+"$secret" unlock rk >/dev/null
+kill "$rk_pid" 2>/dev/null || true; wait "$rk_pid" 2>/dev/null || true; pkill -f 'sleep 37' || true
+check "run-key: bind needs root" "needs root" "$("$secret" bind rk/MAIL_KEY --no-run-key 2>&1 || true)"
+if grep -q "$rk_key" "$work/state/audit.log"; then fail "audit log has a run key"; else ok "audit log has no run key"; fi
+check "audit: run-key recorded" '"op":"run-key"' "$(cat "$work/state/audit.log")"
+
 # --- root and audit ---
 check "root commands need sudo" "needs root" "$("$secret" reveal demo/DB_PASSWORD 2>&1 || true)"
 if grep -q 'pw-123\|sk-fake\|sk_test_abc\|npm-user\|gh-user\|npm-fb\|ghd-user\|ghd-client\|git-tok\|cust-tok\|rt-fake\|cs-fake' "$work/state/audit.log"; then fail "audit log has a value"; else ok "audit log has no values"; fi

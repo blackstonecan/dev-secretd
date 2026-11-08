@@ -98,6 +98,7 @@ func cmdSet(args []string) error {
 	clientID := fs.String("client-id", "", "")
 	clientSecret := fs.String("client-secret", "", "")
 	public := fs.Bool("public", false, "")
+	runKey := fs.Bool("run-key", false, "")
 	name, rest := firstArg(args)
 	// A value on the command line: public values only (secret values are typed hidden).
 	given, rest := firstArg(rest)
@@ -124,7 +125,7 @@ func cmdSet(args []string) error {
 		return err
 	}
 	if *public {
-		if *def || *isFile || *host != "" || *header != "" || *format != "" || *basic || *basicUser != "" || *query != "" || *tokenURL != "" || *clientID != "" || *clientSecret != "" {
+		if *def || *isFile || *host != "" || *header != "" || *format != "" || *basic || *basicUser != "" || *query != "" || *tokenURL != "" || *clientID != "" || *clientSecret != "" || *runKey {
 			return usageError{"a public value takes only a value, --project and --user"}
 		}
 		return setPublic(p, name, given)
@@ -136,7 +137,9 @@ func cmdSet(args []string) error {
 			return usageError{"--file is for run-tier secrets only"}
 		}
 		req.Tier, req.Kind = store.TierProxy, ""
-		req.Binding = binding(*host, *header, *format, *basic, *basicUser, *query, *tokenURL, *clientID, *clientSecret)
+		req.Binding = binding(*host, *header, *format, *basic, *basicUser, *query, *tokenURL, *clientID, *clientSecret, *runKey)
+	} else if *runKey {
+		return usageError{"--run-key is for proxy-tier secrets: add --host and --header"}
 	} else if *basic || *basicUser != "" {
 		return usageError{"--basic is for proxy-tier secrets: add --host and --header"}
 	} else if *clientID != "" || *clientSecret != "" {
@@ -189,9 +192,9 @@ func cmdSet(args []string) error {
 
 // binding builds a proxy-tier binding from the shared set/bind flags. With a
 // token URL it is an OAuth refresh-token binding.
-func binding(host, header, format string, basic bool, basicUser, query, tokenURL, clientID, clientSecret string) *store.Binding {
+func binding(host, header, format string, basic bool, basicUser, query, tokenURL, clientID, clientSecret string, runKey bool) *store.Binding {
 	h, extra := store.ParseHosts(host)
-	b := &store.Binding{Host: h, ExtraHosts: extra, Header: header, Format: format, BasicAuth: basic || basicUser != "", Basic: basicUser, Query: query}
+	b := &store.Binding{Host: h, ExtraHosts: extra, Header: header, Format: format, BasicAuth: basic || basicUser != "", Basic: basicUser, Query: query, RunKey: runKey}
 	if tokenURL != "" || clientID != "" || clientSecret != "" {
 		b.OAuth = &store.OAuth{TokenURL: tokenURL, ClientID: clientID, ClientSecret: clientSecret}
 	}
@@ -200,6 +203,14 @@ func binding(host, header, format string, basic bool, basicUser, query, tokenURL
 
 // describeBinding is the USE column of `secret list`.
 func describeBinding(b *store.Binding) string {
+	use := describeUse(b)
+	if b.RunKey {
+		use += " run-key"
+	}
+	return use
+}
+
+func describeUse(b *store.Binding) string {
 	hosts := strings.Join(b.Hosts(), ",")
 	switch {
 	case b.OAuth != nil:
@@ -452,9 +463,13 @@ func cmdRun(args []string) (int, error) {
 		if err != nil {
 			return 0, err
 		}
-		if resolved, err = c.Resolve(req); err != nil {
+		// The connection stays open until the child ends: that is what keeps
+		// the run key alive (also after a kill -9, the kernel closes it).
+		var held io.Closer
+		if resolved, held, err = c.ResolveHold(req); err != nil {
 			return 0, err
 		}
+		defer held.Close()
 	}
 	for _, r := range resolved {
 		if r.Project != m.Project {
@@ -466,6 +481,13 @@ func cmdRun(args []string) (int, error) {
 		return 0, err
 	}
 	defer env.Cleanup()
+	// For an app that wants the key in a header (X-Secretd-Run-Key).
+	for _, r := range resolved {
+		if r.Key != "" {
+			env.Vars["SECRETD_RUN_KEY"] = r.Key
+			break
+		}
+	}
 
 	path, err := exec.LookPath(command[0])
 	if err != nil {
@@ -620,7 +642,7 @@ func cmdStatus() error {
 	if err != nil {
 		return err
 	}
-	fmt.Printf("secretd is running\nproxy:   %s\nsecrets: %d\nlocked:  %s\n", st.ProxyAddr, st.Secrets, strings.Join(st.Locked, ", "))
+	fmt.Printf("secretd is running\nproxy:   %s\nsecrets: %d\nlocked:  %s\nrun_keys: %d\n", st.ProxyAddr, st.Secrets, strings.Join(st.Locked, ", "), st.RunKeys)
 	return nil
 }
 

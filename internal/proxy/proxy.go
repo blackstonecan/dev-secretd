@@ -17,6 +17,7 @@ import (
 	"strings"
 
 	"github.com/blackstonecan/dev-secretd/internal/redact"
+	"github.com/blackstonecan/dev-secretd/internal/runkey"
 	"github.com/blackstonecan/dev-secretd/internal/state"
 	"github.com/blackstonecan/dev-secretd/internal/store"
 )
@@ -29,8 +30,19 @@ type Proxy struct {
 	// Scheme of the upstream. Always "https" outside tests.
 	Scheme string
 
+	// Keys holds the live per-run keys of secrets with run_key.
+	Keys *runkey.Registry
+
 	tokens tokenCache // access tokens of OAuth bindings
 }
+
+// RunKeyHeader carries the run key, as an alternative to the path segment.
+const RunKeyHeader = "X-Secretd-Run-Key"
+
+const runKeyPrefix = "rk-"
+
+// RunKeySegment is the path segment that carries a run key.
+func RunKeySegment(key string) string { return runKeyPrefix + key }
 
 // BaseURL is the URL that a client of project/name uses.
 func BaseURL(addr, project, name string) string {
@@ -69,6 +81,20 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	b := sec.Binding
+	// A secret with run_key needs the key of a live `secret run`. The key is
+	// taken out of the path here, so it never reaches the upstream or the audit.
+	runKey := ""
+	if b.RunKey {
+		runKey, rest = takeRunKey(r.Header.Get(RunKeyHeader), rest)
+		if runKey == "" {
+			fail(http.StatusUnauthorized, project+"/"+name+" needs a per-run key (start the app with `secret run`)")
+			return
+		}
+		if !p.Keys.Valid(runKey, project, name) {
+			fail(http.StatusForbidden, "run key is not valid for "+project+"/"+name+" (the run ended, or the project was locked)")
+			return
+		}
+	}
 	// Basic auth uses DefaultBasicUser, or the public value the binding names:
 	// the secret's project first, then the user scope.
 	username := store.DefaultBasicUser
@@ -91,6 +117,9 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// base64); mask that too. An OAuth binding's access tokens are known only
 	// after the upstream call, so masks are read again for each response.
 	fixedMasks := []string{sec.Value}
+	if runKey != "" {
+		fixedMasks = append(fixedMasks, runKey)
+	}
 	headerValue := ""
 	if b.Header != "" && b.OAuth == nil {
 		headerValue = b.HeaderValue(sec.Value, username)
@@ -126,6 +155,8 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			// Never forward the client's own credentials to the upstream.
 			pr.Out.Header.Del("Authorization")
 			pr.Out.Header.Del("Proxy-Authorization")
+			// The run key is for this proxy only.
+			pr.Out.Header.Del(RunKeyHeader)
 			switch {
 			case b.OAuth != nil:
 				// The transport adds the access token. Keep the body, so the
@@ -177,6 +208,21 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// The path only: a query parameter can hold the secret.
 	ev.Detail = fmt.Sprintf("%s %s %s %d", r.Method, host, redact.String(rest, masks()...), status)
 	p.Audit.Log(ev)
+}
+
+// takeRunKey returns the run key and the path without it. A first path
+// segment "rk-<key>" wins over the header, and is always removed. The header
+// value may carry the "rk-" prefix too.
+func takeRunKey(header, rest string) (string, string) {
+	seg, after, _ := strings.Cut(strings.TrimPrefix(rest, "/"), "/")
+	if strings.HasPrefix(seg, runKeyPrefix) {
+		rest = "/"
+		if after != "" {
+			rest += after
+		}
+		return strings.TrimPrefix(seg, runKeyPrefix), rest
+	}
+	return strings.TrimPrefix(strings.TrimSpace(header), runKeyPrefix), rest
 }
 
 // pickHost returns the upstream host and the path to send there. When the

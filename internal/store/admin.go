@@ -37,6 +37,10 @@ func (s *Store) Rebind(project, name string, tier Tier, kind Kind, b *Binding, n
 		if sec.Tier == TierPublic || tier == TierPublic {
 			return fmt.Errorf("%s: public and private do not convert; remove it and add it again", sec.Key())
 		}
+		// A full rebind never drops the per-run key requirement. Only SetRunKey does.
+		if b != nil && sec.Tier == TierProxy && sec.Binding != nil && sec.Binding.RunKey {
+			b.RunKey = true
+		}
 		c := *sec
 		c.Tier, c.Kind, c.Binding, c.UpdatedAt = tier, kind, b, now
 		if err := c.Validate(); err != nil {
@@ -56,6 +60,28 @@ func (s *Store) SetDefault(project, name string, def bool, now time.Time) error 
 		}
 		c := *sec
 		c.Default, c.UpdatedAt = def, now
+		if err := c.Validate(); err != nil {
+			return err
+		}
+		m[c.Key()] = &c
+		return nil
+	})
+}
+
+// SetRunKey makes the proxy require a per-run key for a proxy-tier secret, or not.
+func (s *Store) SetRunKey(project, name string, on bool, now time.Time) error {
+	return s.Update(func(m map[string]*Secret) error {
+		sec, ok := m[project+"/"+name]
+		if !ok {
+			return ErrNotFound
+		}
+		if sec.Tier != TierProxy || sec.Binding == nil {
+			return fmt.Errorf("%s is not a proxy-tier secret", sec.Key())
+		}
+		c := *sec
+		bc := *sec.Binding
+		bc.RunKey = on
+		c.Binding, c.UpdatedAt = &bc, now
 		if err := c.Validate(); err != nil {
 			return err
 		}

@@ -361,6 +361,37 @@ secret run --only DB_PASSWORD,GMAIL_TOKEN -- pnpm evals   # exactly these two
 An opt-in entry that has no value in the store does not stop the other
 commands. `secret list` in the project marks such entries `opt-in`.
 
+#### A per-run key for a proxy secret
+
+`optin` only hides the variable: the proxy port stays open to any local
+process. To make the proxy itself refuse everyone but the run, give the secret
+a per-run key. Root sets it once (it is a change to an existing secret):
+
+```bash
+/usr/bin/sudo secret bind blackr-business-ai/GMAIL_OAUTH_REFRESH_TOKEN --run-key
+secret run --with GMAIL_OAUTH_REFRESH_TOKEN -- pnpm mail:worker
+```
+
+At creation, `secret set NAME --host H --header X --run-key` and
+`secret oauth login NAME ... --run-key` set it too. `secret list` shows
+`run-key` in the USE column. `sudo secret bind P/NAME --no-run-key` turns it
+off. A full `bind` keeps the requirement.
+
+- `secret run` gets a random key (32 bytes) from secretd. The `{proxy}` value
+  already carries it: `http://127.0.0.1:7777/<project>/<NAME>/rk-<key>/<path>`.
+  The proxy removes the `rk-<key>` segment before it forwards the request.
+  The key is also in `SECRETD_RUN_KEY`, for an app that prefers a header:
+  `X-Secretd-Run-Key: <key>` (the proxy never forwards that header).
+- A request without a key gets `401`, one with a wrong, ended or other
+  secret's key gets `403`. Both are in the audit log, never with the key.
+- The key lives while `secret run` lives: it ends when the command exits,
+  also after `kill -9` (the daemon sees the connection close), when you
+  `secret lock <project>`, and when secretd restarts (restart the run).
+  Keys are in the daemon's memory only; `secret status` shows how many runs
+  hold one (`run_keys`).
+- A one-off `curl` to the base URL does not work for such a secret. Let a run
+  make the call: `secret run --only NAME -- sh -c 'curl "$GMAIL_API_BASE_URL/..."'`.
+
 ### Root commands (your own terminal, never inside an agent session)
 
 ```bash
@@ -382,11 +413,19 @@ your shell files.
   `docker` can reach `/var/lib/secretd` and `/etc/secretd`.
 - **Run-tier values** are in the memory and the environment of the app, which
   runs as your user. Use dev-only values for them.
-- **The proxy has no client authentication.** Any local process can use an
-  unlocked project's proxy secrets (but not read them). Spend limits on each
-  key and the audit log cover this. `secret lock` stops use of a project.
-  A user-scope proxy secret is reached at `/user/NAME`, so locking a project
-  does not stop direct calls to it; `secret lock user` does.
+- **The proxy has no client authentication** for secrets without a per-run
+  key. Any local process can use an unlocked project's such secrets (but not
+  read them). Spend limits on each key and the audit log cover this.
+  `secret lock` stops use of a project. A user-scope proxy secret is reached
+  at `/user/NAME`, so locking a project does not stop direct calls to it;
+  `secret lock user` does. A secret with `run_key` needs the key of a live
+  `secret run` that listed it.
+- **A per-run key does not stop** the run's own child processes (they inherit
+  the key in the environment and in the URLs), nor another process of your
+  user: it can read `/proc/<pid>/environ` of the run, or start its own
+  `secret run --with NAME`. It stops code that calls the port directly
+  without being started by `secret run` for that secret (a stray script, an
+  agent ability, a prompt-injected tool call outside the run).
 - **`secret lock` is not a barrier against an agent**: an agent can run
   `secret unlock`. It stops use that nobody planned.
 - **The master key depends on this host** (systemd host key + TPM, no PCR

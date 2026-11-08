@@ -12,11 +12,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"time"
 
 	"github.com/blackstonecan/dev-secretd/internal/proxy"
+	"github.com/blackstonecan/dev-secretd/internal/runkey"
 	"github.com/blackstonecan/dev-secretd/internal/state"
 	"github.com/blackstonecan/dev-secretd/internal/store"
 )
@@ -48,6 +50,9 @@ type Info struct {
 type ResolveRequest struct {
 	Project string        `json:"project"`
 	Items   []ResolveItem `json:"items"`
+	// Hold: the caller keeps the connection open for the life of the run; keys
+	// for run_key secrets die when it closes.
+	Hold bool `json:"hold,omitempty"`
 }
 
 type ResolveItem struct {
@@ -65,6 +70,10 @@ type Resolved struct {
 	Kind    store.Kind `json:"kind,omitempty"`
 	BaseURL string     `json:"base_url,omitempty"` // proxy tier
 	Value   string     `json:"value,omitempty"`    // run tier
+	// RunKey: the proxy needs this run's key for the item. BaseURL carries it.
+	// Key is the same for all keyed items of one run.
+	RunKey bool   `json:"run_key,omitempty"`
+	Key    string `json:"key,omitempty"`
 }
 
 type ProjectRequest struct {
@@ -104,6 +113,7 @@ type Status struct {
 	ProxyAddr string   `json:"proxy_addr"`
 	Locked    []string `json:"locked"`
 	Secrets   int      `json:"secrets"`
+	RunKeys   int      `json:"run_keys"` // live runs that hold a run key
 }
 
 type errorBody struct {
@@ -120,6 +130,8 @@ type Server struct {
 	Now       func() time.Time
 	// HTTP reaches OAuth token endpoints. nil = a default client.
 	HTTP *http.Client
+	// Keys holds the per-run keys. Share it with the proxy.
+	Keys *runkey.Registry
 }
 
 type callerKey struct{}
@@ -262,7 +274,10 @@ func (s *Server) resolve(w http.ResponseWriter, r *http.Request) {
 		fail(http.StatusForbidden, fmt.Errorf("project %s is locked", req.Project))
 		return
 	}
+	// Read the rest of the body, so the server notices when the caller hangs up.
+	_, _ = io.Copy(io.Discard, r.Body)
 	out := make([]Resolved, 0, len(req.Items))
+	var keyed []int // indexes in out
 	for _, it := range req.Items {
 		valid := it.Fallback == "" || (req.Project != store.UserProject && (it.Fallback == store.UserProject || it.Fallback == "none"))
 		if !valid {
@@ -312,19 +327,82 @@ func (s *Server) resolve(w http.ResponseWriter, r *http.Request) {
 		res := Resolved{Project: sec.Project, Name: sec.Name, Tier: sec.Tier, Kind: sec.Kind}
 		if sec.Tier == store.TierProxy {
 			res.BaseURL = proxy.BaseURL(s.ProxyAddr, sec.Project, sec.Name)
+			if sec.Binding != nil && sec.Binding.RunKey {
+				res.RunKey = true
+				keyed = append(keyed, len(out))
+			}
 		} else {
 			res.Value = sec.Value
 		}
 		out = append(out, res)
+	}
+	var run *runkey.Run
+	if len(keyed) > 0 {
+		var ke *keyError
+		if run, ke = s.issueKey(out, keyed, req); ke != nil {
+			fail(ke.code, ke)
+			return
+		}
 	}
 	for _, it := range out {
 		detail := string(it.Tier)
 		if it.Project != req.Project {
 			detail += " from " + it.Project
 		}
+		if it.RunKey {
+			detail += " run-key"
+		}
 		s.log(r, "resolve", req.Project, it.Name, detail, nil)
 	}
 	writeJSON(w, out)
+	if run == nil {
+		return
+	}
+	// Hold the connection: the keys live as long as the caller does.
+	if f, ok := w.(http.Flusher); ok {
+		f.Flush()
+	}
+	detail := "revoked: run ended"
+	select {
+	case <-r.Context().Done():
+	case <-run.Done():
+		detail = "revoked: locked or daemon stopping"
+	}
+	s.Keys.Revoke(run)
+	s.log(r, "run-key", req.Project, "", detail, nil)
+}
+
+type keyError struct {
+	code int
+	msg  string
+}
+
+func (e *keyError) Error() string { return e.msg }
+
+// issueKey makes the run key for the keyed items and puts it into them. The
+// caller must hold the connection (req.Hold); else the key would never die.
+func (s *Server) issueKey(out []Resolved, keyed []int, req ResolveRequest) (*runkey.Run, *keyError) {
+	if !req.Hold {
+		it := out[keyed[0]]
+		return nil, &keyError{http.StatusBadRequest, fmt.Sprintf("%s/%s needs a per-run key: use `secret run` (update the secret CLI)", it.Project, it.Name)}
+	}
+	if s.Keys == nil {
+		return nil, &keyError{http.StatusInternalServerError, "run keys are not enabled"}
+	}
+	// "<project>/" has no name: it only lets a lock of the run's own project end the run.
+	names := []string{req.Project + "/"}
+	for _, i := range keyed {
+		names = append(names, out[i].Project+"/"+out[i].Name)
+	}
+	key, run, err := s.Keys.Issue(names)
+	if err != nil {
+		return nil, &keyError{http.StatusInternalServerError, "cannot make a run key"}
+	}
+	for _, i := range keyed {
+		out[i].BaseURL += "/" + proxy.RunKeySegment(key)
+		out[i].Key = key
+	}
+	return run, nil
 }
 
 func (s *Server) lockFn(locked bool) http.HandlerFunc {
@@ -339,7 +417,13 @@ func (s *Server) lockFn(locked bool) http.HandlerFunc {
 			return
 		}
 		err := s.State.SetLocked(req.Project, locked, s.now())
-		s.log(r, op, req.Project, "", "", err)
+		detail := ""
+		if locked && err == nil {
+			if n := s.Keys.RevokeProject(req.Project); n > 0 {
+				detail = fmt.Sprintf("revoked %d run key(s)", n)
+			}
+		}
+		s.log(r, op, req.Project, "", detail, err)
 		if err != nil {
 			writeErr(w, http.StatusInternalServerError, err)
 			return
@@ -354,7 +438,7 @@ func (s *Server) status(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusInternalServerError, err)
 		return
 	}
-	st := Status{ProxyAddr: s.ProxyAddr, Locked: []string{}, Secrets: len(secs)}
+	st := Status{ProxyAddr: s.ProxyAddr, Locked: []string{}, Secrets: len(secs), RunKeys: s.Keys.Count()}
 	seen := map[string]bool{}
 	for _, sec := range secs {
 		if !seen[sec.Project] && s.State.IsLocked(sec.Project) {

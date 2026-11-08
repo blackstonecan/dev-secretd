@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/blackstonecan/dev-secretd/internal/runkey"
 	"github.com/blackstonecan/dev-secretd/internal/state"
 	"github.com/blackstonecan/dev-secretd/internal/store"
 )
@@ -23,11 +24,19 @@ func startServer(t *testing.T, allowUID int) (*Client, *state.State) {
 // startServerDir also returns the state directory, which holds audit.log.
 func startServerDir(t *testing.T, allowUID int) (*Client, *state.State, string) {
 	t.Helper()
+	c, st, dir, _ := startServerKeys(t, allowUID)
+	return c, st, dir
+}
+
+// startServerKeys also returns the registry of run keys.
+func startServerKeys(t *testing.T, allowUID int) (*Client, *state.State, string, *runkey.Registry) {
+	t.Helper()
 	dir := t.TempDir()
+	keys := runkey.New()
 	key, _ := store.NewKey()
 	s, _ := store.Open(dir, key)
 	st, _ := state.Load(dir)
-	srv := &Server{Store: s, State: st, Audit: state.NewAudit(dir), AllowUID: allowUID, ProxyAddr: "127.0.0.1:7777"}
+	srv := &Server{Store: s, State: st, Audit: state.NewAudit(dir), AllowUID: allowUID, ProxyAddr: "127.0.0.1:7777", Keys: keys}
 
 	sock := filepath.Join(dir, "api.sock")
 	ln, err := net.Listen("unix", sock)
@@ -37,7 +46,7 @@ func startServerDir(t *testing.T, allowUID int) (*Client, *state.State, string) 
 	hs := &http.Server{Handler: srv.Handler(), ConnContext: ConnContext}
 	go hs.Serve(ln)
 	t.Cleanup(func() { hs.Close() })
-	return NewClient(sock), st, dir
+	return NewClient(sock), st, dir, keys
 }
 
 func TestSetListResolve(t *testing.T) {

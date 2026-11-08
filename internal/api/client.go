@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/url"
@@ -15,18 +16,23 @@ import (
 // Client talks to secretd over its Unix socket.
 type Client struct {
 	http *http.Client
+	hold *http.Client // no overall timeout: the response body stays open for a run
 }
 
 func NewClient(socket string) *Client {
-	return &Client{http: &http.Client{
-		Timeout: 30 * time.Second,
-		Transport: &http.Transport{
-			DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
-				var d net.Dialer
-				return d.DialContext(ctx, "unix", socket)
-			},
+	dial := func(ctx context.Context, _, _ string) (net.Conn, error) {
+		var d net.Dialer
+		return d.DialContext(ctx, "unix", socket)
+	}
+	return &Client{
+		http: &http.Client{
+			Timeout:   30 * time.Second,
+			Transport: &http.Transport{DialContext: dial},
 		},
-	}}
+		hold: &http.Client{
+			Transport: &http.Transport{DialContext: dial, ResponseHeaderTimeout: 30 * time.Second},
+		},
+	}
 }
 
 func (c *Client) Set(req SetRequest) error {
@@ -50,6 +56,36 @@ func (c *Client) Resolve(req ResolveRequest) ([]Resolved, error) {
 	var out []Resolved
 	err := c.do("POST", "/v1/resolve", req, &out)
 	return out, err
+}
+
+// ResolveHold is Resolve for a run that holds the connection: keys for
+// run_key secrets live until the returned Closer is closed (or the process
+// dies). The caller must close it after the run.
+func (c *Client) ResolveHold(req ResolveRequest) ([]Resolved, io.Closer, error) {
+	req.Hold = true
+	raw, err := json.Marshal(req)
+	if err != nil {
+		return nil, nil, err
+	}
+	hr, err := http.NewRequest("POST", "http://secretd/v1/resolve", bytes.NewReader(raw))
+	if err != nil {
+		return nil, nil, err
+	}
+	hr.Header.Set("Content-Type", "application/json")
+	resp, err := c.hold.Do(hr)
+	if err != nil {
+		return nil, nil, wrapDial(err)
+	}
+	if resp.StatusCode >= 300 {
+		defer resp.Body.Close()
+		return nil, nil, statusError(resp)
+	}
+	var out []Resolved
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		resp.Body.Close()
+		return nil, nil, err
+	}
+	return out, resp.Body, nil
 }
 
 // OAuthExchange finishes a consent: the daemon exchanges the code and stores
@@ -92,22 +128,30 @@ func (c *Client) do(method, path string, in, out any) error {
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := c.http.Do(req)
 	if err != nil {
-		var opErr *net.OpError
-		if errors.As(err, &opErr) {
-			return fmt.Errorf("cannot reach secretd (is it running?): %w", err)
-		}
-		return err
+		return wrapDial(err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode >= 300 {
-		var e errorBody
-		if json.NewDecoder(resp.Body).Decode(&e) == nil && e.Error != "" {
-			return errors.New(e.Error)
-		}
-		return fmt.Errorf("secretd: HTTP %d", resp.StatusCode)
+		return statusError(resp)
 	}
 	if out == nil {
 		return nil
 	}
 	return json.NewDecoder(resp.Body).Decode(out)
+}
+
+func wrapDial(err error) error {
+	var opErr *net.OpError
+	if errors.As(err, &opErr) {
+		return fmt.Errorf("cannot reach secretd (is it running?): %w", err)
+	}
+	return err
+}
+
+func statusError(resp *http.Response) error {
+	var e errorBody
+	if json.NewDecoder(resp.Body).Decode(&e) == nil && e.Error != "" {
+		return errors.New(e.Error)
+	}
+	return fmt.Errorf("secretd: HTTP %d", resp.StatusCode)
 }

@@ -181,6 +181,15 @@ mail:worker`. `--only A,B` gives exactly those entries. Use it for a secret
 (a mailbox token, a payment key) that only one of the project's processes
 needs, so the others never hold it.
 
+`optin` hides the variable only; the proxy port stays open. To make the proxy
+refuse everyone but that run, the user runs `/usr/bin/sudo secret bind
+P/NAME --run-key` (or `--run-key` at `secret set` / `secret oauth login`;
+`--no-run-key` turns it off). `secret run` then gets a per-run key: the
+`{proxy}` URL carries it (`/<project>/<NAME>/rk-<key>/...`) and
+`SECRETD_RUN_KEY` holds it (header `X-Secretd-Run-Key`). No key is `401`, a
+wrong or ended key `403`. The key dies when `secret run` exits, on
+`secret lock`, and on a daemon restart. Never print or log it.
+
 ## A one-off API call (no project, no `secret run`)
 
 Call a proxy secret's URL directly; secretd adds the real credential. Send a
@@ -194,7 +203,9 @@ curl -s -H 'Authorization: placeholder' http://127.0.0.1:7777/user/GITHUB_TOKEN/
 ```
 
 The path after `/<project>/<NAME>` goes to the first bound host (here
-`https://api.github.com/...`); with several hosts, start the path with another
+`https://api.github.com/...`). A secret marked `run-key` in `secret list` cannot be
+called this way (`401`): use `secret run --only NAME -- sh -c 'curl "$SOME_BASE_URL/..."'`.
+With several hosts, start the path with another
 bound host to reach it (`/user/GITHUB_TOKEN/github.com/...`). Use the project's own secret when the task is
 about that project (`/<project>/GITHUB_TOKEN/...`), and only read-only calls
 unless the user asked for a change.
@@ -282,7 +293,11 @@ secret list --all
 ## Limits to keep in mind
 
 - The proxy has no client auth: any local process can **use** an unlocked
-  project's proxy secrets. Keys should have provider-side spend limits.
+  project's proxy secrets that have no per-run key. Keys should have
+  provider-side spend limits.
+- A per-run key (`run-key`) stops code that is not started by `secret run` for
+  that secret. It does not stop the run's children or another process of the
+  same user (`/proc/<pid>/environ`, its own `secret run --with NAME`).
 - `secret lock` is hygiene, not a barrier. Do not unlock projects the user is
   not working on.
 - Root and the `docker` group can read everything. Do not use Docker to reach

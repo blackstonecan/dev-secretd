@@ -56,12 +56,13 @@ func cmdOAuthLogin(args []string) error {
 	scope := fs.String("scope", "", "")
 	account := fs.String("account", "", "")
 	noOpen := fs.Bool("no-open", false, "")
+	runKey := fs.Bool("run-key", false, "")
 	name, rest := firstArg(args)
 	if err := fs.Parse(rest); err != nil {
 		return usageError{err.Error()}
 	}
 	if name == "" || fs.NArg() > 0 {
-		return usageError{"usage: secret oauth login NAME --host H[,H2] --client-id PUB --client-secret NAME --scope S[,S] (--google | --auth-url U --token-url U [--revoke-url U]) [--account EMAIL] [--no-open]"}
+		return usageError{"usage: secret oauth login NAME --host H[,H2] --client-id PUB --client-secret NAME --scope S[,S] (--google | --auth-url U --token-url U [--revoke-url U]) [--account EMAIL] [--run-key] [--no-open]"}
 	}
 	if *google {
 		if *authURL == "" {
@@ -94,7 +95,7 @@ func cmdOAuthLogin(args []string) error {
 	if len(scopes) == 0 {
 		return usageError{"--scope is required (comma-separated)"}
 	}
-	b := binding(*host, "", "", false, "", "", *tokenURL, *clientID, *clientSecret)
+	b := binding(*host, "", "", false, "", "", *tokenURL, *clientID, *clientSecret, *runKey)
 	if err := (&store.Secret{Project: p, Name: name, Tier: store.TierProxy, Binding: b, Value: "pending", Default: *def}).Validate(); err != nil {
 		return err
 	}

@@ -100,6 +100,44 @@ func TestSetDefault(t *testing.T) {
 	}
 }
 
+func TestSetRunKey(t *testing.T) {
+	s, _ := newStore(t)
+	now := time.Now()
+	proxy := Secret{Project: "demo", Name: "API_KEY", Tier: TierProxy, Value: "sk-1",
+		Binding: &Binding{Host: "api.example.com", Header: "x-api-key"}}
+	if err := s.Create(proxy, now); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Create(runSecret("TOKEN", "a"), now); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SetRunKey("demo", "API_KEY", true, now); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := s.Get("demo", "API_KEY"); !got.Binding.RunKey || got.Binding.Host != "api.example.com" {
+		t.Fatalf("run key not set: %+v", got.Binding)
+	}
+	// A full rebind keeps the requirement.
+	if err := s.Rebind("demo", "API_KEY", TierProxy, "", &Binding{Host: "b.example.com", Header: "x-key"}, now); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := s.Get("demo", "API_KEY"); !got.Binding.RunKey || got.Binding.Host != "b.example.com" {
+		t.Fatalf("rebind dropped the run key: %+v", got.Binding)
+	}
+	if err := s.SetRunKey("demo", "API_KEY", false, now); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := s.Get("demo", "API_KEY"); got.Binding.RunKey {
+		t.Fatal("run key not cleared")
+	}
+	if err := s.SetRunKey("demo", "TOKEN", true, now); err == nil || !strings.Contains(err.Error(), "not a proxy-tier secret") {
+		t.Fatalf("run-tier secret: %v", err)
+	}
+	if err := s.SetRunKey("demo", "MISSING", true, now); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("want ErrNotFound, got %v", err)
+	}
+}
+
 func TestBindingHostsAndHeader(t *testing.T) {
 	h, extra := ParseHosts(" api.github.com, github.com ,")
 	b := &Binding{Host: h, ExtraHosts: extra, Header: "Authorization", Basic: "GITHUB_USERNAME"}

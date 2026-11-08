@@ -126,6 +126,8 @@ func rootBind(s *store.Store, audit *state.Audit, who string, args []string) err
 	isFile := fs.Bool("file", false, "")
 	def := fs.Bool("default", false, "")
 	noDef := fs.Bool("no-default", false, "")
+	runKey := fs.Bool("run-key", false, "")
+	noRunKey := fs.Bool("no-run-key", false, "")
 	if err := fs.Parse(rest); err != nil {
 		return usageError{err.Error()}
 	}
@@ -133,8 +135,30 @@ func rootBind(s *store.Store, audit *state.Audit, who string, args []string) err
 	if err != nil {
 		return err
 	}
+	if *noRunKey || (*runKey && fs.NFlag() == 1) {
+		if *runKey && *noRunKey {
+			return usageError{"use --run-key or --no-run-key, not both"}
+		}
+		if fs.NFlag() != 1 {
+			return usageError{"use --no-run-key alone"}
+		}
+		err = s.SetRunKey(p, n, *runKey, time.Now())
+		audit.Log(state.Event{Op: "bind", Project: p, Name: n, Caller: who, Detail: "run_key=" + strconv.FormatBool(*runKey), Error: errString(err)})
+		if err != nil {
+			return err
+		}
+		if *runKey {
+			fmt.Printf("%s/%s now needs a per-run key: only `secret run` processes that list it can use it\n", p, n)
+		} else {
+			fmt.Printf("%s/%s no longer needs a per-run key\n", p, n)
+		}
+		return nil
+	}
+	if *runKey && *run {
+		return usageError{"--run-key is for proxy-tier secrets, not --run"}
+	}
 	if *def || *noDef {
-		if *def && *noDef || *run || *isFile || *host != "" || *header != "" || *format != "" || *query != "" || *basic || *basicUser != "" || *tokenURL != "" || *clientID != "" || *clientSecret != "" {
+		if *def && *noDef || *run || *isFile || *host != "" || *header != "" || *format != "" || *query != "" || *basic || *basicUser != "" || *tokenURL != "" || *clientID != "" || *clientSecret != "" || *runKey {
 			return usageError{"use --default or --no-default alone"}
 		}
 		err = s.SetDefault(p, n, *def, time.Now())
@@ -157,7 +181,7 @@ func rootBind(s *store.Store, audit *state.Audit, who string, args []string) err
 			kind = store.KindFile
 		}
 	} else {
-		b = binding(*host, *header, *format, *basic, *basicUser, *query, *tokenURL, *clientID, *clientSecret)
+		b = binding(*host, *header, *format, *basic, *basicUser, *query, *tokenURL, *clientID, *clientSecret, *runKey)
 	}
 	err = s.Rebind(p, n, tier, kind, b, time.Now())
 	detail := string(tier)

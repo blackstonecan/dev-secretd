@@ -30,6 +30,9 @@
 //	    env:
 //	      GMAIL_API_BASE_URL: "{proxy}"
 //
+// `sudo secret bind P/GMAIL_TOKEN --run-key` makes the proxy serve a proxy
+// secret only to the run that lists it: "{proxy}" then carries the run's key.
+//
 // The user manifest (UserPath) has `project: user` and lists the user-scope
 // secrets for `secret run --user`.
 package manifest
