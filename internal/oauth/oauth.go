@@ -77,10 +77,11 @@ func Revoke(ctx context.Context, c *http.Client, revokeURL, token string) error 
 	if revokeURL == "" {
 		return errors.New("no revoke URL")
 	}
-	resp, err := do(ctx, c, revokeURL, url.Values{"token": {token}})
+	resp, cancel, err := do(ctx, c, revokeURL, url.Values{"token": {token}})
 	if err != nil {
 		return err
 	}
+	defer cancel()
 	io.Copy(io.Discard, io.LimitReader(resp.Body, maxBody))
 	resp.Body.Close()
 	if resp.StatusCode/100 != 2 {
@@ -90,10 +91,11 @@ func Revoke(ctx context.Context, c *http.Client, revokeURL, token string) error 
 }
 
 func post(ctx context.Context, c *http.Client, tokenURL string, form url.Values) (*Token, error) {
-	resp, err := do(ctx, c, tokenURL, form)
+	resp, cancel, err := do(ctx, c, tokenURL, form)
 	if err != nil {
 		return nil, err
 	}
+	defer cancel()
 	defer resp.Body.Close()
 	raw, err := io.ReadAll(io.LimitReader(resp.Body, maxBody))
 	if err != nil {
@@ -119,25 +121,30 @@ func post(ctx context.Context, c *http.Client, tokenURL string, form url.Values)
 	return &Token{Access: body.AccessToken, Refresh: body.RefreshToken, ExpiresIn: body.ExpiresIn, Scope: body.Scope, IDToken: body.IDToken}, nil
 }
 
-func do(ctx context.Context, c *http.Client, endpoint string, form url.Values) (*http.Response, error) {
+// do sends the form and returns the response with the cancel function of its
+// timeout. The caller calls cancel after it has read the body: the body read
+// runs under the same context, so a cancel before the read ends the read with
+// "context canceled" (this was a bug until 2026-11-08).
+func do(ctx context.Context, c *http.Client, endpoint string, form url.Values) (*http.Response, context.CancelFunc, error) {
 	u, err := url.Parse(endpoint)
 	if err != nil || u.Scheme != "https" {
-		return nil, errors.New("token endpoint must be an https URL")
+		return nil, nil, errors.New("token endpoint must be an https URL")
 	}
 	ctx, cancel := context.WithTimeout(ctx, 20*time.Second)
-	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, strings.NewReader(form.Encode()))
 	if err != nil {
-		return nil, err
+		cancel()
+		return nil, nil, err
 	}
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Set("Accept", "application/json")
 	resp, err := c.Do(req)
 	if err != nil {
+		cancel()
 		// A transport error can quote the URL; the host is enough.
-		return nil, fmt.Errorf("cannot reach the token endpoint at %s", u.Host)
+		return nil, nil, fmt.Errorf("cannot reach the token endpoint at %s", u.Host)
 	}
-	return resp, nil
+	return resp, cancel, nil
 }
 
 // sanitize keeps an OAuth error code only if it looks like one.

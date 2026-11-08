@@ -29,6 +29,8 @@ type oauthFixture struct {
 	apiBody  string       // last API request body
 	// tokenReply decides what the token endpoint answers (status, JSON).
 	tokenReply func(form map[string]string, n int) (int, string)
+	// tokenSlow sends the token body 100 ms after its headers.
+	tokenSlow bool
 	// apiReply decides what the API answers for a Bearer token.
 	apiReply func(bearer string) (int, string)
 }
@@ -51,6 +53,12 @@ func newOAuthFixture(t *testing.T) *oauthFixture {
 			code, body := f.tokenReply(form, n)
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(code)
+			if f.tokenSlow {
+				// Headers first, the body later: the body read of the refresh
+				// must run under a live context (bug fixed 2026-11-08).
+				w.(http.Flusher).Flush()
+				time.Sleep(100 * time.Millisecond)
+			}
 			io.WriteString(w, body)
 			return
 		}
@@ -119,6 +127,21 @@ func TestOAuthRefreshAndBearer(t *testing.T) {
 	}
 	if !strings.Contains(log, `"op":"oauth"`) {
 		t.Fatalf("no oauth audit event: %s", log)
+	}
+}
+
+// The token endpoint may send its body after the headers (Google does). The
+// refresh must still read it: the timeout context ends after the read, not
+// after the headers.
+func TestOAuthSlowTokenBody(t *testing.T) {
+	f := newOAuthFixture(t)
+	f.tokenSlow = true
+	resp, body := get(t, f.proxy.URL+"/mail/GMAIL_REFRESH/gmail/v1/users/me/profile", nil)
+	if resp.StatusCode != 200 {
+		t.Fatalf("status %d: %s", resp.StatusCode, body)
+	}
+	if len(f.apiAuth) != 1 || f.apiAuth[0] != "Bearer at-1" {
+		t.Fatalf("API got %v", f.apiAuth)
 	}
 }
 
