@@ -162,6 +162,12 @@ secret oauth login GMAIL_TOKEN --google --host gmail.googleapis.com,pubsub.googl
 ```
 
 The user runs `secret oauth login` (it needs their browser and sign-in).
+Other providers take `--auth-url` and `--token-url` instead of `--google`.
+A provider that wants the redirect URL registered (Canva) needs
+`--redirect-uri http://127.0.0.1:PORT/PATH`, the same URL as registered;
+`--auth-param KEY=VALUE` adds a parameter to the consent URL. A provider
+with single-use refresh tokens is handled by secretd: it stores each new
+refresh token itself.
 Then the entry is an ordinary proxy entry: `GMAIL_TOKEN: { tier: proxy,
 env: { GMAIL_API_BASE_URL: "{proxy}" } }`; the app sends requests to
 `$GMAIL_API_BASE_URL/gmail/v1/...` with no token, and to another bound host

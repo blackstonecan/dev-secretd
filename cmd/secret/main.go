@@ -47,9 +47,13 @@ User commands:
                        that lists it (per-run key, gone when the run ends)
   secret oauth login NAME --host H[,H2] --client-id PUB --client-secret NAME --scope S[,S]
                     (--google | --auth-url U --token-url U [--revoke-url U]) [--account EMAIL]
-                    [--run-key] [--no-open]
+                    [--run-key] [--no-open] [--redirect-uri http://127.0.0.1:PORT[/PATH]]
+                    [--auth-param K=V]...
                                           run the OAuth consent (browser, loopback, PKCE); secretd
-                                          exchanges the code and stores the refresh token itself
+                                          exchanges the code and stores the refresh token itself.
+                                          --redirect-uri: for a provider that wants the redirect
+                                          URL registered (the default is a free port);
+                                          --auth-param: one more parameter of the consent URL
   secret get NAME [--project P | --user]  print a public value (the project's, else the user's)
   secret list [--project P | --all]       names and rules; values of public entries only
   secret run [--project P] -- CMD...      run CMD with the secrets of secrets.yaml

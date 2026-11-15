@@ -208,6 +208,8 @@ const UserProject = "user"
 var (
 	ErrNotFound = errors.New("secret not found")
 	ErrExists   = errors.New("secret already exists (use `sudo secret rotate` to change it)")
+	// ErrChanged: the stored value is not the one the caller started from.
+	ErrChanged = errors.New("secret was changed by someone else")
 )
 
 func ValidProject(p string) bool { return projectRe.MatchString(p) }
@@ -428,6 +430,34 @@ func (s *Store) Create(sec Secret, now time.Time) error {
 			return ErrExists
 		}
 		m[sec.Key()] = &sec
+		return nil
+	})
+}
+
+// ReplaceRefreshToken stores the refresh token that a token endpoint sent in
+// place of the one it just used (providers with rotating refresh tokens give
+// each one a single use). It is the only change to a private value that the
+// daemon makes by itself, and it is narrow: the secret must be an OAuth
+// binding and its value must still be old, so a value that root rotated in
+// the meantime is never overwritten (ErrChanged).
+func (s *Store) ReplaceRefreshToken(project, name, old, new string, now time.Time) error {
+	if new == "" {
+		return errors.New("empty value")
+	}
+	return s.Update(func(m map[string]*Secret) error {
+		sec, ok := m[project+"/"+name]
+		if !ok {
+			return ErrNotFound
+		}
+		if sec.Tier != TierProxy || sec.Binding == nil || sec.Binding.OAuth == nil {
+			return fmt.Errorf("%s is not an OAuth refresh token", sec.Key())
+		}
+		if sec.Value != old {
+			return ErrChanged
+		}
+		c := *sec
+		c.Value, c.UpdatedAt = new, now
+		m[c.Key()] = &c
 		return nil
 	})
 }

@@ -294,3 +294,49 @@ func TestValidate(t *testing.T) {
 		}
 	}
 }
+
+// The daemon may replace an OAuth refresh token with the next one, and
+// nothing else.
+func TestReplaceRefreshToken(t *testing.T) {
+	s, _ := newStore(t)
+	t0 := time.Now().Add(-time.Hour)
+	oauth := Secret{Project: "demo", Name: "TOKEN", Tier: TierProxy, Value: "rt-1",
+		Binding: &Binding{Host: "api.example.com", RunKey: true, OAuth: &OAuth{TokenURL: "https://auth.example.com/token", ClientID: "CID"}}}
+	if err := s.Create(oauth, t0); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now()
+	if err := s.ReplaceRefreshToken("demo", "TOKEN", "rt-1", "rt-2", now); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := s.Get("demo", "TOKEN")
+	if got.Value != "rt-2" || !got.UpdatedAt.Equal(now) || !got.CreatedAt.Equal(t0) || got.Binding == nil || !got.Binding.RunKey || got.Binding.OAuth == nil {
+		t.Fatalf("after replace: %+v", got)
+	}
+	// The value is not the one the caller started from: root rotated it.
+	if err := s.ReplaceRefreshToken("demo", "TOKEN", "rt-1", "rt-3", now); !errors.Is(err, ErrChanged) {
+		t.Fatalf("stale old value: %v", err)
+	}
+	if err := s.ReplaceRefreshToken("demo", "TOKEN", "rt-2", "", now); err == nil {
+		t.Fatal("empty value accepted")
+	}
+	if err := s.ReplaceRefreshToken("demo", "NONE", "a", "b", now); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("missing secret: %v", err)
+	}
+	// Only an OAuth binding: an API key or a run-tier value is never replaced.
+	key := Secret{Project: "demo", Name: "API_KEY", Tier: TierProxy, Value: "sk-1", Binding: &Binding{Host: "api.example.com", Header: "x-api-key"}}
+	if err := s.Create(key, t0); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Create(runSecret("DB_PASSWORD", "pw1"), t0); err != nil {
+		t.Fatal(err)
+	}
+	for name, old := range map[string]string{"API_KEY": "sk-1", "DB_PASSWORD": "pw1"} {
+		if err := s.ReplaceRefreshToken("demo", name, old, "new", now); err == nil {
+			t.Errorf("%s: replaced", name)
+		}
+		if got, _ := s.Get("demo", name); got.Value != old {
+			t.Errorf("%s: value changed to %q", name, got.Value)
+		}
+	}
+}

@@ -316,6 +316,33 @@ three Google endpoints and asks for a refresh token (`access_type=offline`,
 `prompt=consent`); other providers take `--auth-url`, `--token-url` and
 optionally `--revoke-url`.
 
+A provider that wants the redirect URL registered beforehand (Canva, for
+example) cannot take a free port. Register a loopback URL with a fixed port
+at the provider and give the same URL, byte for byte:
+`--redirect-uri http://127.0.0.1:8765/oauth/callback`. Only `http://127.0.0.1`
+with a port is accepted. `--auth-param KEY=VALUE` (repeatable) adds a
+parameter to the consent URL, for example `--auth-param
+resource=https://mcp.example.com/mcp`; it cannot change the parameters the
+command sets itself (`client_id`, `redirect_uri`, `state`, the PKCE
+challenge, `scope`).
+
+```bash
+secret set CANVA_OAUTH_CLIENT_ID OC-xxxx --public
+secret set CANVA_OAUTH_CLIENT_SECRET --host api.canva.com --header Authorization --basic-user CANVA_OAUTH_CLIENT_ID
+secret oauth login CANVA_TOKEN --host api.canva.com \
+  --auth-url https://www.canva.com/api/oauth/authorize --token-url https://api.canva.com/auth/v1/oauth/token \
+  --client-id CANVA_OAUTH_CLIENT_ID --client-secret CANVA_OAUTH_CLIENT_SECRET \
+  --scope design:meta:read,design:content:read,design:content:write \
+  --redirect-uri http://127.0.0.1:8765/oauth/callback
+```
+
+These are the endpoints of an app from Canva's Developer Portal (its MCP
+server is `https://api.canva.com/connect/v1/mcp`, so the app's base URL is
+`{proxy}/connect/v1/mcp`). `mcp.canva.com` is another server, for clients
+that register themselves; a Developer Portal client id does not work there.
+To find a provider's endpoints, send a request without a token to the API
+and follow the `resource_metadata` URL of the `WWW-Authenticate` header.
+
 In `secrets.yaml` it is an ordinary proxy entry; the app sends requests
 without a token, with the API path after `{proxy}` (the first host) or
 `{proxy}/pubsub.googleapis.com/...` (another bound host):
@@ -332,6 +359,18 @@ without a token, with the API path after `{proxy}` (the first host) or
   binding; a request can never pick another. Both referenced names are
   looked up in the secret's project first, then the user scope, at each
   refresh. `secret list` shows `oauth <token host> client-id=... client-secret=...`.
+- Rotating refresh tokens: some providers give each refresh token a single
+  use and send the next one with every access token. secretd stores the new
+  one itself, at once (`secret list` shows the new date; the audit log says
+  `rotated refresh token saved`, never a token). This is the only change the
+  daemon makes to a private value without root, and only for an OAuth
+  binding whose value is still the one it used: a value that root rotated
+  in the meantime wins. If the store cannot be written, the proxy keeps
+  working with the token in memory and tries the save again on later
+  requests (`rotated refresh token NOT saved` in the audit log); a daemon
+  restart before a successful save needs a new consent. So does a refresh
+  whose answer is lost on the way: the provider has then used up the old
+  token and the new one never arrived.
 - When the provider refuses the refresh (`invalid_grant`: the account's
   password changed, access was revoked), the proxy answers 502 with a
   message that names the secret and says to give the consent again. It

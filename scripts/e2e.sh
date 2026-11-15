@@ -223,6 +223,8 @@ check "oauth: missing client secret" "oauth client secret BASE_NOPE" "$(curl -s 
 check "oauth login: name exists" "exists already"  "$("$secret" oauth login GM_TOKEN --google --host gmail.googleapis.com --client-id GM_CID --scope a 2>&1 || true)"
 check "oauth login: needs scope" "--scope is required" "$("$secret" oauth login GM_NEW --google --host gmail.googleapis.com --client-id GM_CID 2>&1 || true)"
 check "oauth login: needs endpoints" "--google, or --auth-url" "$("$secret" oauth login GM_NEW --host gmail.googleapis.com --client-id GM_CID --scope a 2>&1 || true)"
+check "oauth login: redirect must be loopback" "--redirect-uri must be http://127.0.0.1:PORT" "$("$secret" oauth login GM_NEW --google --host gmail.googleapis.com --client-id GM_CID --scope a --redirect-uri http://localhost:8765/cb 2>&1 || true)"
+check "oauth login: reserved auth param" "sets this parameter itself" "$("$secret" oauth login GM_NEW --google --host gmail.googleapis.com --client-id GM_CID --scope a --auth-param redirect_uri=https://evil.example 2>&1 || true)"
 
 # --- per-run keys (the unit tests cover forwarding) ---
 mkdir -p "$work/rk" && cd "$work/rk"

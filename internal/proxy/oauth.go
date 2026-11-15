@@ -30,12 +30,21 @@ type tokenCache struct {
 }
 
 type tokenEntry struct {
-	mu       sync.Mutex
-	refresh  string // the refresh token the access token came from
+	mu sync.Mutex
+	// stored is the value of the secret in the store that this entry belongs to.
+	stored string
+	// refresh is the refresh token for the next refresh: stored, or a newer one
+	// that the token endpoint sent (rotation) and the store has not taken yet.
+	refresh  string
 	access   string
 	previous string // the access token before the last refresh, still masked
 	expiry   time.Time
+	saveTry  time.Time // the last attempt to save a rotated refresh token
 }
+
+// A rotated refresh token that could not be saved is tried again after this
+// long, on the next request. A variable for the tests.
+var saveRetry = 30 * time.Second
 
 func (c *tokenCache) entry(key string) *tokenEntry {
 	c.mu.Lock()
@@ -67,9 +76,21 @@ func (p *Proxy) accessToken(ctx context.Context, sec *store.Secret, force bool) 
 	e := p.tokens.entry(sec.Key())
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	if e.refresh != sec.Value {
-		// Rotated: forget the old access token.
-		e.refresh, e.access, e.previous, e.expiry = sec.Value, "", "", time.Time{}
+	if sec.Value != e.stored {
+		// Either the secret was replaced (root rotated it, or this is the first
+		// use), or the caller read it before this proxy saved a rotated refresh
+		// token. The store says which.
+		cur, err := p.Store.Get(sec.Project, sec.Name)
+		if err != nil {
+			return "", &oauthError{http.StatusInternalServerError, sec.Key() + ": store error"}
+		}
+		if cur.Value != e.stored {
+			// Replaced: forget the old tokens.
+			e.stored, e.refresh, e.access, e.previous, e.expiry = cur.Value, cur.Value, "", "", time.Time{}
+		}
+	}
+	if e.refresh != e.stored && time.Since(e.saveTry) >= saveRetry {
+		p.saveRefresh(sec, e)
 	}
 	if !force && e.access != "" && time.Now().Before(e.expiry) {
 		return e.access, nil
@@ -98,6 +119,13 @@ func (p *Proxy) accessToken(ctx context.Context, sec *store.Secret, force bool) 
 		return "", &oauthError{http.StatusBadGateway, msg}
 	}
 	p.Audit.Log(ev)
+	if tok.Refresh != "" && tok.Refresh != e.refresh {
+		// The provider rotates refresh tokens: the one just used is dead. Keep
+		// the new one in memory first, so a failed save does not lose it while
+		// the daemon runs.
+		e.refresh = tok.Refresh
+		p.saveRefresh(sec, e)
+	}
 	ttl := time.Duration(tok.ExpiresIn) * time.Second
 	switch {
 	case ttl <= 0:
@@ -111,13 +139,33 @@ func (p *Proxy) accessToken(ctx context.Context, sec *store.Secret, force bool) 
 	return e.access, nil
 }
 
-// knownTokens returns the access tokens that may appear in a response of
-// sec: the current one and the one before it.
+// saveRefresh writes a rotated refresh token to the store. The caller holds
+// e.mu. A failure is logged and tried again later: the token in memory keeps
+// the proxy working, but a daemon restart before a successful save needs a
+// new consent.
+func (p *Proxy) saveRefresh(sec *store.Secret, e *tokenEntry) {
+	e.saveTry = time.Now()
+	ev := state.Event{Op: "oauth", Project: sec.Project, Name: sec.Name, Detail: "rotated refresh token saved"}
+	switch err := p.Store.ReplaceRefreshToken(sec.Project, sec.Name, e.stored, e.refresh, e.saveTry); {
+	case err == nil:
+		e.stored = e.refresh
+	case errors.Is(err, store.ErrChanged), errors.Is(err, store.ErrNotFound):
+		// Root rotated or removed the secret during the refresh. Its value wins;
+		// the next request reads it.
+		ev.Detail, ev.Error = "rotated refresh token dropped", err.Error()
+	default:
+		ev.Detail, ev.Error = "rotated refresh token NOT saved (will try again)", err.Error()
+	}
+	p.Audit.Log(ev)
+}
+
+// knownTokens returns the tokens that may appear in a response of sec: the
+// access token, the one before it, and a rotated refresh token.
 func (p *Proxy) knownTokens(sec *store.Secret) []string {
 	e := p.tokens.entry(sec.Key())
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	return []string{e.access, e.previous}
+	return []string{e.access, e.previous, e.refresh}
 }
 
 func (p *Proxy) httpClient() *http.Client {

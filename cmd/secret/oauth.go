@@ -13,6 +13,7 @@ import (
 	"net/url"
 	"os"
 	"os/exec"
+	"strconv"
 	"strings"
 	"time"
 
@@ -57,12 +58,24 @@ func cmdOAuthLogin(args []string) error {
 	account := fs.String("account", "", "")
 	noOpen := fs.Bool("no-open", false, "")
 	runKey := fs.Bool("run-key", false, "")
+	redirect := fs.String("redirect-uri", "", "")
+	var authParams paramList
+	fs.Var(&authParams, "auth-param", "")
 	name, rest := firstArg(args)
 	if err := fs.Parse(rest); err != nil {
 		return usageError{err.Error()}
 	}
 	if name == "" || fs.NArg() > 0 {
-		return usageError{"usage: secret oauth login NAME --host H[,H2] --client-id PUB --client-secret NAME --scope S[,S] (--google | --auth-url U --token-url U [--revoke-url U]) [--account EMAIL] [--run-key] [--no-open]"}
+		return usageError{"usage: secret oauth login NAME --host H[,H2] --client-id PUB --client-secret NAME --scope S[,S] (--google | --auth-url U --token-url U [--revoke-url U]) [--redirect-uri http://127.0.0.1:PORT[/PATH]] [--auth-param K=V]... [--account EMAIL] [--run-key] [--no-open]"}
+	}
+	listenAddr, callbackPath, err := loopbackRedirect(*redirect)
+	if err != nil {
+		return usageError{err.Error()}
+	}
+	for _, kv := range authParams {
+		if reservedAuthParams[kv[0]] {
+			return usageError{"--auth-param " + kv[0] + ": the command sets this parameter itself"}
+		}
 	}
 	if *google {
 		if *authURL == "" {
@@ -132,16 +145,30 @@ func cmdOAuthLogin(args []string) error {
 	verifier := randomURL(48)
 	sum := sha256.Sum256([]byte(verifier))
 	state := randomURL(24)
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	ln, err := net.Listen("tcp", listenAddr)
 	if err != nil {
+		if *redirect != "" {
+			return fmt.Errorf("cannot listen on %s for --redirect-uri: %w", listenAddr, err)
+		}
 		return err
 	}
-	redirectURI := "http://" + ln.Addr().String()
+	// A provider that wants the redirect URL registered (Canva) compares it
+	// byte for byte, so --redirect-uri is sent exactly as given.
+	redirectURI := *redirect
+	if redirectURI == "" {
+		redirectURI = "http://" + ln.Addr().String()
+	}
 
-	q := url.Values{
-		"client_id": {id.Value}, "redirect_uri": {redirectURI}, "response_type": {"code"},
-		"scope": {strings.Join(consentScopes, " ")}, "state": {state},
-		"code_challenge": {base64.RawURLEncoding.EncodeToString(sum[:])}, "code_challenge_method": {"S256"},
+	q := url.Values{}
+	for _, kv := range authParams {
+		q.Set(kv[0], kv[1])
+	}
+	for k, v := range map[string]string{
+		"client_id": id.Value, "redirect_uri": redirectURI, "response_type": "code",
+		"scope": strings.Join(consentScopes, " "), "state": state,
+		"code_challenge": base64.RawURLEncoding.EncodeToString(sum[:]), "code_challenge_method": "S256",
+	} {
+		q.Set(k, v)
 	}
 	if *google {
 		// Without these Google gives no refresh token.
@@ -157,7 +184,7 @@ func cmdOAuthLogin(args []string) error {
 	}
 	u.RawQuery = q.Encode()
 
-	code, err := waitForCode(ln, state)
+	code, err := waitForCode(ln, state, callbackPath)
 	defer ln.Close()
 	open := func() {
 		who := ""
@@ -199,9 +226,55 @@ func cmdOAuthLogin(args []string) error {
 	return nil
 }
 
-// waitForCode serves the loopback redirect. It returns a function that waits
-// for exactly one callback with the right state.
-func waitForCode(ln net.Listener, state string) (func() (string, error), error) {
+// reservedAuthParams are the consent parameters the command sets itself. An
+// --auth-param can add to the consent URL (for example resource=...), never
+// change these.
+var reservedAuthParams = map[string]bool{
+	"client_id": true, "redirect_uri": true, "response_type": true, "scope": true, "state": true,
+	"code_challenge": true, "code_challenge_method": true,
+}
+
+// paramList collects repeated --auth-param K=V flags.
+type paramList [][2]string
+
+func (p *paramList) String() string { return "" }
+
+func (p *paramList) Set(s string) error {
+	k, v, ok := strings.Cut(s, "=")
+	if !ok || k == "" {
+		return errors.New("want KEY=VALUE")
+	}
+	*p = append(*p, [2]string{k, v})
+	return nil
+}
+
+// loopbackRedirect returns the address to listen on and the callback path for
+// --redirect-uri. Without one, the port is free to choose and the path is "/"
+// (Google accepts any loopback port). A given URL must be a loopback URL on
+// 127.0.0.1 with a fixed port: nothing else can receive the code safely.
+func loopbackRedirect(raw string) (addr, path string, err error) {
+	if raw == "" {
+		return "127.0.0.1:0", "/", nil
+	}
+	bad := errors.New("--redirect-uri must be http://127.0.0.1:PORT or http://127.0.0.1:PORT/PATH")
+	u, perr := url.Parse(raw)
+	if perr != nil || u.Scheme != "http" || u.Hostname() != "127.0.0.1" || u.User != nil || u.RawQuery != "" || u.Fragment != "" || strings.HasSuffix(raw, "?") || strings.HasSuffix(raw, "#") {
+		return "", "", bad
+	}
+	port, perr := strconv.Atoi(u.Port())
+	if perr != nil || port < 1 || port > 65535 {
+		return "", "", bad
+	}
+	path = u.EscapedPath()
+	if path == "" {
+		path = "/"
+	}
+	return net.JoinHostPort("127.0.0.1", u.Port()), path, nil
+}
+
+// waitForCode serves the loopback redirect on path. It returns a function
+// that waits for exactly one callback with the right state.
+func waitForCode(ln net.Listener, state, path string) (func() (string, error), error) {
 	type result struct {
 		code string
 		err  error
@@ -212,7 +285,7 @@ func waitForCode(ln net.Listener, state string) (func() (string, error), error) 
 		fmt.Fprintf(w, "<!doctype html><meta charset=\"utf-8\"><title>secretd</title><p>%s</p>", text)
 	}
 	srv := &http.Server{ReadHeaderTimeout: 10 * time.Second, Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/" {
+		if r.URL.EscapedPath() != path {
 			http.NotFound(w, r)
 			return
 		}
